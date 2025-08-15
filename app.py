@@ -13,20 +13,115 @@ from pptx.dml.color import RGBColor
 
 st.set_page_config(page_title="Gerador de Book", page_icon="📸", layout="wide")
 
-# ===== Tema (toggle claro/escuro) =====
+# ===== Tema (Claro predominante branco, acento LARANJA e detalhes PRETO) =====
 def apply_theme(dark: bool):
+    ORANGE = "#FF7A00"   # laranja principal
+    ORANGE_HOVER = "#E66E00"
+    BLACK = "#111111"
+    GRAY_BG = "#f6f6f7"
+
     if dark:
-        css = """
+        css = f"""
         <style>
-        .stApp { background-color: #0e1117; color: #fafafa; }
-        .stMarkdown, .stTextInput, .stFileUploader, .stButton, .stProgress { color: #fafafa; }
-        .stSelectbox, .stTextInput > div > div > input { color: #fafafa; }
+        :root {{
+            --accent: {ORANGE};
+            --accent-hover: {ORANGE_HOVER};
+            --text: #f5f5f5;
+            --bg: #0e1117;
+            --panel: #11151c;
+            --muted: #a3a3a3;
+        }}
+        .stApp {{ background-color: var(--bg); color: var(--text); }}
+
+        /* Cards/painéis (sidebar etc) */
+        section[data-testid="stSidebar"] > div {{
+            background: var(--panel);
+            border-right: 1px solid #1b212c;
+        }}
+
+        /* Títulos */
+        h1, h2, h3, h4, h5, h6 {{ color: var(--text); }}
+
+        /* Inputs e texto */
+        .stTextInput input, .stNumberInput input {{
+            color: var(--text);
+            background: #0f131a;
+            border: 1px solid #232a36;
+        }}
+        .stTextInput input:focus, .stNumberInput input:focus {{
+            outline: none; border: 1px solid var(--accent); box-shadow: 0 0 0 1px var(--accent);
+        }}
+
+        /* Botões (geral e download) */
+        .stButton > button, .stDownloadButton > button {{
+            background: var(--accent); color: white; border: none; border-radius: 10px;
+        }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{
+            background: var(--accent-hover); color: white;
+        }}
+
+        /* Slider & progress */
+        div[role="slider"] {{ border: 1px solid #2a3342; }}
+        .stProgress > div > div {{
+            background-color: var(--accent);
+        }}
+
+        /* Links */
+        a {{ color: var(--accent); }}
         </style>
         """
     else:
-        css = """
+        css = f"""
         <style>
-        .stApp { background-color: #ffffff; color: #1f2328; }
+        :root {{
+            --accent: {ORANGE};
+            --accent-hover: {ORANGE_HOVER};
+            --text: {BLACK};
+            --bg: #ffffff;
+            --panel: {GRAY_BG};
+            --muted: #5f6368;
+        }}
+        .stApp {{ background-color: var(--bg); color: var(--text); }}
+
+        /* Sidebar com fundo clarinho */
+        section[data-testid="stSidebar"] > div {{
+            background: var(--panel);
+            border-right: 1px solid #ececec;
+        }}
+
+        /* Títulos com detalhe preto */
+        h1, h2, h3, h4, h5, h6 {{ color: var(--text); }}
+        h1::selection, h2::selection, h3::selection {{ background: var(--accent); color: white; }}
+
+        /* Inputs */
+        .stTextInput input, .stNumberInput input {{
+            color: var(--text);
+            background: #ffffff;
+            border: 1px solid #dcdcdc;
+        }}
+        .stTextInput input:focus, .stNumberInput input:focus {{
+            outline: none; border: 1px solid var(--accent); box-shadow: 0 0 0 1px var(--accent) inset;
+        }}
+
+        /* Botões (geral e download) */
+        .stButton > button, .stDownloadButton > button {{
+            background: var(--accent); color: white; border: none; border-radius: 10px;
+        }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{
+            background: var(--accent-hover); color: white;
+        }}
+
+        /* Slider (bolinha laranja é nativa, mas reforçamos) */
+        .stSlider [data-baseweb="slider"] > div > div > div {{ background: rgba(255,122,0,0.2); }}
+        .stSlider [data-baseweb="slider"] > div > div > div > div {{ background: var(--accent); }}
+
+        /* Barra de progresso laranja */
+        .stProgress > div > div {{
+            background-color: var(--accent);
+        }}
+
+        /* Links */
+        a {{ color: var(--accent); }}
         </style>
         """
     st.markdown(css, unsafe_allow_html=True)
