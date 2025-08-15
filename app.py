@@ -1,6 +1,7 @@
 # app.py
 import re
 from io import BytesIO
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
@@ -32,41 +33,24 @@ def apply_theme(dark: bool):
             --muted: #a3a3a3;
         }}
         .stApp {{ background-color: var(--bg); color: var(--text); }}
-
-        /* Cards/painéis (sidebar etc) */
         section[data-testid="stSidebar"] > div {{
             background: var(--panel);
             border-right: 1px solid #1b212c;
         }}
-
-        /* Títulos */
         h1, h2, h3, h4, h5, h6 {{ color: var(--text); }}
-
-        /* Inputs e texto */
         .stTextInput input, .stNumberInput input {{
-            color: var(--text);
-            background: #0f131a;
-            border: 1px solid #232a36;
+            color: var(--text); background: #0f131a; border: 1px solid #232a36;
         }}
         .stTextInput input:focus, .stNumberInput input:focus {{
             outline: none; border: 1px solid var(--accent); box-shadow: 0 0 0 1px var(--accent);
         }}
-
-        /* Botões (geral e download) */
         .stButton > button, .stDownloadButton > button {{
             background: var(--accent); color: white; border: none; border-radius: 10px;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover {{
             background: var(--accent-hover); color: white;
         }}
-
-        /* Slider & progress */
-        div[role="slider"] {{ border: 1px solid #2a3342; }}
-        .stProgress > div > div {{
-            background-color: var(--accent);
-        }}
-
-        /* Links */
+        .stProgress > div > div {{ background-color: var(--accent); }}
         a {{ color: var(--accent); }}
         </style>
         """
@@ -82,45 +66,26 @@ def apply_theme(dark: bool):
             --muted: #5f6368;
         }}
         .stApp {{ background-color: var(--bg); color: var(--text); }}
-
-        /* Sidebar com fundo clarinho */
         section[data-testid="stSidebar"] > div {{
             background: var(--panel);
             border-right: 1px solid #ececec;
         }}
-
-        /* Títulos com detalhe preto */
         h1, h2, h3, h4, h5, h6 {{ color: var(--text); }}
-        h1::selection, h2::selection, h3::selection {{ background: var(--accent); color: white; }}
-
-        /* Inputs */
         .stTextInput input, .stNumberInput input {{
-            color: var(--text);
-            background: #ffffff;
-            border: 1px solid #dcdcdc;
+            color: var(--text); background: #ffffff; border: 1px solid #dcdcdc;
         }}
         .stTextInput input:focus, .stNumberInput input:focus {{
             outline: none; border: 1px solid var(--accent); box-shadow: 0 0 0 1px var(--accent) inset;
         }}
-
-        /* Botões (geral e download) */
         .stButton > button, .stDownloadButton > button {{
             background: var(--accent); color: white; border: none; border-radius: 10px;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover {{
             background: var(--accent-hover); color: white;
         }}
-
-        /* Slider (bolinha laranja é nativa, mas reforçamos) */
         .stSlider [data-baseweb="slider"] > div > div > div {{ background: rgba(255,122,0,0.2); }}
         .stSlider [data-baseweb="slider"] > div > div > div > div {{ background: var(--accent); }}
-
-        /* Barra de progresso laranja */
-        .stProgress > div > div {{
-            background-color: var(--accent);
-        }}
-
-        /* Links */
+        .stProgress > div > div {{ background-color: var(--accent); }}
         a {{ color: var(--accent); }}
         </style>
         """
@@ -130,7 +95,6 @@ if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
 # ===== Login simples (didático) =====
-# DICIONÁRIO ÚNICO com todos os logins
 ALLOWED_USERS = {
     "lucas.costa@mkthouse.com.br": "mudar12345",
     "gabriel.garcia@mkthouse.com.br": "Peter2025!",
@@ -144,7 +108,6 @@ ALLOWED_USERS = {
     "janaina.morais@mkthouse.com.br": "mudar12345",
     "debora.ramos@mkthouse.com.br": "mudar12345",
 }
-# normaliza as chaves para minúsculas (evita erro por caixa)
 ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
 
 def do_login():
@@ -153,7 +116,6 @@ def do_login():
         email = st.text_input("E-mail", placeholder="seu.email@mkthouse.com.br")
         pwd = st.text_input("Senha", type="password", placeholder="••••••••")
         entrar = st.form_submit_button("Entrar")
-
     if entrar:
         email_norm = (email or "").strip().lower()
         if email_norm in ALLOWED_USERS and pwd == ALLOWED_USERS[email_norm]:
@@ -182,11 +144,9 @@ def redimensionar(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
 
 def comprimir_jpeg_binsearch(img: Image.Image, limite_kb: int) -> BytesIO:
     lo, hi, best = 35, 95, None
-    # tentativa rápida
     buf = BytesIO(); img.save(buf, "JPEG", quality=75, optimize=True, progressive=True, subsampling=2)
     if buf.tell()/1024 <= limite_kb: buf.seek(0); return buf
     best = buf
-    # busca binária
     while lo <= hi:
         mid = (lo+hi)//2
         buf = BytesIO(); img.save(buf, "JPEG", quality=mid, optimize=True, progressive=True, subsampling=2)
@@ -211,30 +171,68 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
 
 def px_to_inches(px): return Inches(px / 96.0)
 
-def gerar_ppt(items, resultados, titulo):
+# --- slots de layout (1, 2 ou 3 por slide) ---
+def get_slots(n, prs):
+    """Retorna [(left, top, max_w, max_h)] para n imagens no slide."""
+    IMG_TOP = Inches(1.2)
+    CONTENT_W = Inches(11)    # mesma largura útil de antes
+    CONTENT_H = Inches(6)
+    GAP = Inches(0.2)
+
+    start_left = (prs.slide_width - CONTENT_W) / 2
+
+    if n == 1:
+        return [(start_left, IMG_TOP, CONTENT_W, CONTENT_H)]
+    else:
+        cols = n
+        total_gap = GAP * (cols - 1)
+        cell_w = (CONTENT_W - total_gap) / cols
+        slots = []
+        for c in range(cols):
+            left = start_left + c * (cell_w + GAP)
+            slots.append((left, IMG_TOP, cell_w, CONTENT_H))
+        return slots
+
+def add_title(slide, text):
+    TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H = Inches(0.5), Inches(0.2), Inches(12), Inches(1)
+    tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H)
+    tf = tx.text_frame; tf.clear()
+    p = tf.paragraphs[0]; run = p.add_run(); run.text = text
+    font = run.font; font.name='Arial'; font.size=Pt(15); font.bold=True; font.color.rgb=RGBColor(0,0,0)
+    p.alignment = 1
+
+def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
+    img_w_in = px_to_inches(w_px)
+    img_h_in = px_to_inches(h_px)
+    ratio = min(float(max_w_in)/float(img_w_in), float(max_h_in)/float(img_h_in), 1.0)
+    final_w = img_w_in * ratio
+    final_h = img_h_in * ratio
+    x = left + (max_w_in - final_w)/2
+    y = top  + (max_h_in - final_h)/2
+    buf.seek(0)
+    slide.shapes.add_picture(buf, x, y, width=final_w, height=final_h)
+
+def gerar_ppt(items, resultados, titulo, max_per_slide):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
     blank = prs.slide_layouts[6]
-    TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H = Inches(0.5), Inches(0.2), Inches(12), Inches(1)
-    IMG_TOP, IMG_MAX_W, IMG_MAX_H = Inches(1.2), Inches(11), Inches(6)
 
+    # --- agrupa por loja mantendo ordem original ---
+    groups = OrderedDict()
     for loja, url in items:
-        if url not in resultados: continue
-        _, buf, (w_px, h_px) = resultados[url]
-        slide = prs.slides.add_slide(blank)
-        tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H)
-        tf = tx.text_frame; tf.clear()
-        p = tf.paragraphs[0]; run = p.add_run(); run.text = str(loja)
-        font = run.font; font.name = 'Arial'; font.size = Pt(15); font.bold = True; font.color.rgb = RGBColor(0,0,0)
-        p.alignment = 1
+        if url in resultados:
+            groups.setdefault(str(loja), []).append(resultados[url])  # (loja, buf, (w,h))
 
-        img_w_in = min(px_to_inches(w_px), IMG_MAX_W)
-        img_h_in = min(px_to_inches(h_px), IMG_MAX_H)
-        ratio = min(float(IMG_MAX_W)/float(img_w_in), float(IMG_MAX_H)/float(img_h_in), 1.0)
-        final_w, final_h = img_w_in*ratio, img_h_in*ratio
-        img_left, img_top = (prs.slide_width - final_w)/2, IMG_TOP
+    # --- para cada loja, cria slides em lotes de 'max_per_slide' ---
+    for loja, imgs in groups.items():
+        for i in range(0, len(imgs), max_per_slide):
+            batch = imgs[i:i+max_per_slide]
+            slide = prs.slides.add_slide(blank)
+            add_title(slide, loja)
 
-        buf.seek(0); slide.shapes.add_picture(buf, img_left, img_top, width=final_w, height=final_h)
+            slots = get_slots(len(batch), prs)
+            for ( _loja, buf, (w_px, h_px) ), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
@@ -249,6 +247,10 @@ def main_app():
         st.caption("Colunas da planilha (nomes do cabeçalho):")
         loja_col = st.text_input("Coluna de LOJA", value="Selecione sua loja")
         img_col  = st.text_input("Coluna de FOTOS", value="Faça o upload das fotos")
+
+        st.markdown("---")
+        st.caption("Layout")
+        max_per_slide = st.selectbox("Fotos por slide (máx.)", [1, 2, 3], index=0)
 
         st.markdown("---")
         st.caption("Tamanho e compressão")
@@ -280,13 +282,13 @@ def main_app():
         if missing:
             st.error(f"Colunas não encontradas: {missing}"); st.stop()
 
+        # monta lista (loja, url) e remove duplicados preservando ordem
         items = []
         for _, row in df.iterrows():
             loja = str(row[loja_col]).strip()
             for url in extrair_links(row.get(img_col, "")):
                 if url.startswith("http"):
                     items.append((loja, url))
-
         seen, uniq = set(), []
         for loja, url in items:
             if url not in seen:
@@ -318,7 +320,7 @@ def main_app():
 
         status.write(f"Concluído. Falhas: {falhas}")
         titulo = "Apresentacao_Relatorio_Compacta"
-        ppt_bytes = gerar_ppt(items, resultados, titulo)
+        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide)
         st.success("PPT gerado com sucesso!")
         st.download_button("⬇️ Baixar PPT", data=ppt_bytes, file_name=f"{titulo}.pptx",
                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
