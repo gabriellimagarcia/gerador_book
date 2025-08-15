@@ -130,17 +130,22 @@ if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
 # ===== Login simples (didático) =====
-ALLOWED_USERS = {"lucas.costa@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"gabriel.garcia@mkthouse.com.br": "Peter2025!"}  # ajuste aqui
-ALLOWED_USERS = {"daniela.scibor@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"regiane.paula@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"pamela.fructuoso@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"fernanda.sabino@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"cacia.nogueira@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"edson.fortaleza@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"lucas.depaula@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"janaina.morais@mkthouse.com.br": "mudar12345"}  # ajuste aqui
-ALLOWED_USERS = {"debora.ramos@mkthouse.com.br": "mudar12345"}  # ajuste aqui
+# DICIONÁRIO ÚNICO com todos os logins
+ALLOWED_USERS = {
+    "lucas.costa@mkthouse.com.br": "mudar12345",
+    "gabriel.garcia@mkthouse.com.br": "Peter2025!",
+    "daniela.scibor@mkthouse.com.br": "mudar12345",
+    "regiane.paula@mkthouse.com.br": "mudar12345",
+    "pamela.fructuoso@mkthouse.com.br": "mudar12345",
+    "fernanda.sabino@mkthouse.com.br": "mudar12345",
+    "cacia.nogueira@mkthouse.com.br": "mudar12345",
+    "edson.fortaleza@mkthouse.com.br": "mudar12345",
+    "lucas.depaula@mkthouse.com.br": "mudar12345",
+    "janaina.morais@mkthouse.com.br": "mudar12345",
+    "debora.ramos@mkthouse.com.br": "mudar12345",
+}
+# normaliza as chaves para minúsculas (evita erro por caixa)
+ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
 
 def do_login():
     st.title("🔐 Login")
@@ -148,10 +153,12 @@ def do_login():
         email = st.text_input("E-mail", placeholder="seu.email@mkthouse.com.br")
         pwd = st.text_input("Senha", type="password", placeholder="••••••••")
         entrar = st.form_submit_button("Entrar")
+
     if entrar:
-        if email in ALLOWED_USERS and pwd == ALLOWED_USERS[email]:
+        email_norm = (email or "").strip().lower()
+        if email_norm in ALLOWED_USERS and pwd == ALLOWED_USERS[email_norm]:
             st.session_state.auth = True
-            st.session_state.user_email = email
+            st.session_state.user_email = email_norm
             st.rerun()
         else:
             st.error("Credenciais inválidas. Verifique e tente novamente.")
