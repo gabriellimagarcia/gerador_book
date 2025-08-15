@@ -131,6 +131,7 @@ if "dark_mode" not in st.session_state:
 
 # ===== Login simples (didático) =====
 ALLOWED_USERS = {"lucas.costa@mkthouse.com.br": "mudar12345"}  # ajuste aqui
+ALLOWED_USERS = {"gabriel.garcia@mkthouse.com.br": "Peter2025!"}  # ajuste aqui
 
 def do_login():
     st.title("🔐 Login")
