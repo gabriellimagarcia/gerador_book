@@ -235,9 +235,29 @@ def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
     top = Inches(0.2)
     slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
 
+def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_width_in: float, bottom_margin_in: float = 0.5, right_margin_in: float = 0.5):
+    """Adiciona assinatura no canto inferior direito. Mantém proporção do arquivo."""
+    if not signature_bytes:
+        return
+    # Precisamos da altura estimada para posicionar pelo bottom-right antes de inserir
+    try:
+        im = Image.open(BytesIO(signature_bytes))
+        w_px, h_px = im.size
+        ratio = h_px / float(w_px) if w_px else 0
+    except Exception:
+        ratio = 0.4  # fallback razoável
+    sig_h_in = signature_width_in * ratio
+
+    left = prs.slide_width - Inches(right_margin_in) - Inches(signature_width_in)
+    top  = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
+    slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
+
 # ===== Geração do PPT (respeita exclusões) =====
 def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
-              logo_bytes=None, logo_width_in=1.2, excluded_urls=None):
+              logo_bytes=None, logo_width_in=1.2,
+              signature_bytes=None, signature_width_in=None,
+              auto_half_signature=True,
+              excluded_urls=None):
     excluded_urls = excluded_urls or set()
 
     prs = Presentation()
@@ -258,6 +278,13 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
 
     title_rgb = pick_contrast_color(*bg_rgb)
 
+    # tamanho default da assinatura: metade do logo (se auto_half)
+    if auto_half_signature:
+        base_logo_w = logo_width_in if logo_width_in else 1.2
+        signature_width = (base_logo_w / 2.0)
+    else:
+        signature_width = signature_width_in or 0.6  # fallback
+
     for loja in loja_keys:
         imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
@@ -265,8 +292,12 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
             slide = prs.slides.add_slide(blank)
             set_slide_bg(slide, bg_rgb)
             add_title(slide, loja, title_rgb)
+
             if logo_bytes:
-                add_logo_top_right(slide, prs, logo_bytes, logo_width_in)
+                add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
+
+            if signature_bytes:
+                add_signature_bottom_right(slide, prs, signature_bytes, signature_width)
 
             slots = get_slots(len(batch), prs)
             for (url, (_loja, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
@@ -315,7 +346,7 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
     with top_c3:
         st.caption(f"Excluídas: **{len(excluded)}** foto(s)")
 
-    # render por loja (em "páginas" de max_per_slide -> simula slides)
+    # render por loja
     for loja in loja_keys:
         imgs = groups[loja]
         with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=False):
@@ -388,14 +419,39 @@ def main_app():
         st.caption("Aparência do slide")
         bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF", key="bg_hex")
 
-        # Uploader do logo + persistência dos bytes
+        # Logo (topo direito) - persistência dos bytes
         logo_file = st.file_uploader("Logo (PNG/JPG) — canto superior direito", type=["png","jpg","jpeg"], key="logo_uploader")
         if "logo_bytes" not in st.session_state:
             st.session_state.logo_bytes = None
         if logo_file is not None:
             st.session_state.logo_bytes = logo_file.getvalue()
 
-        logo_width_in = st.slider("Largura do logo (em polegadas)", 0.5, 3.0, 1.2, 0.1, key="logo_width_in")
+        logo_width_in = st.slider("Largura do LOGO (em polegadas)", 0.5, 3.0, 1.2, 0.1, key="logo_width_in")
+
+        # Assinatura (canto inferior direito) - metade do logo por padrão
+        st.markdown("—")
+        st.caption("Assinatura (opcional)")
+        signature_file = st.file_uploader("Assinatura (PNG/JPG) — canto inferior direito", type=["png","jpg","jpeg"], key="signature_uploader")
+        if "signature_bytes" not in st.session_state:
+            st.session_state.signature_bytes = None
+        if signature_file is not None:
+            st.session_state.signature_bytes = signature_file.getvalue()
+
+        default_sig_half = True if "auto_half_signature" not in st.session_state else st.session_state.auto_half_signature
+        auto_half_signature = st.checkbox("Usar 1/2 do tamanho do logo (recomendado)", value=default_sig_half, key="auto_half_signature")
+
+        # Se o usuário quiser ajustar manualmente
+        derived_default_sig = (st.session_state.get("logo_width_in", 1.2) / 2.0)
+        if not auto_half_signature:
+            signature_width_in = st.slider(
+                "Largura da ASSINATURA (em polegadas)",
+                0.3, 2.0, float(derived_default_sig), 0.05,
+                key="signature_width_in"
+            )
+        else:
+            # Mantém um valor em session_state (usado apenas se desligar o auto)
+            if "signature_width_in" not in st.session_state:
+                st.session_state.signature_width_in = float(derived_default_sig)
 
         st.markdown("---")
         st.caption("Pré-visualização")
@@ -507,7 +563,7 @@ def main_app():
 
             status.write(f"Concluído. Falhas: {falhas}")
 
-            # grava pipeline (usa SEMPRE st.session_state.logo_bytes)
+            # grava pipeline (usa SEMPRE os bytes persistidos)
             st.session_state.pipeline = {
                 "items": items,
                 "resultados": resultados,
@@ -518,6 +574,9 @@ def main_app():
                     "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
                     "logo_bytes": st.session_state.logo_bytes,
                     "logo_width_in": st.session_state["logo_width_in"],
+                    "signature_bytes": st.session_state.signature_bytes,
+                    "auto_half_signature": st.session_state.get("auto_half_signature", True),
+                    "signature_width_in": st.session_state.get("signature_width_in", (st.session_state["logo_width_in"]/2.0)),
                     "thumb_px": st.session_state["thumb_px"],
                 }
             }
@@ -547,6 +606,8 @@ def main_app():
                 items, resultados, titulo,
                 cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
                 cfg["logo_bytes"], cfg["logo_width_in"],
+                cfg["signature_bytes"], cfg["signature_width_in"],
+                cfg["auto_half_signature"],
                 excluded_urls=st.session_state.excluded_urls
             )
             st.success(f"PPT gerado! (excluídas {len(st.session_state.excluded_urls)} foto(s))")
