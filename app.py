@@ -1,6 +1,7 @@
 # app.py
 import re
 import hashlib
+import base64
 from io import BytesIO
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -95,7 +96,7 @@ def apply_theme(dark: bool):
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
-# ===== Login simples =====
+# ===== Login (lista completa) =====
 ALLOWED_USERS = {
     "lucas.costa@mkthouse.com.br": "mudar12345",
     "gabriel.garcia@mkthouse.com.br": "Peter2025!",
@@ -275,13 +276,18 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
-# ===== PRÉ-VISUALIZAÇÃO com thumbs menores + checkbox por foto =====
+# ===== util: imagem -> HTML com borda colorida =====
+def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, border_color: str):
+    im = image.copy()
+    im.thumbnail((width_px, width_px))
+    buf = BytesIO()
+    im.save(buf, format="PNG")
+    data = base64.b64encode(buf.getvalue()).decode("utf-8")
+    style = f"border:{border_px}px solid {border_color};border-radius:8px;display:block;max-width:100%;width:{width_px}px;"
+    return f'<img src="data:image/png;base64,{data}" style="{style}" />'
+
+# ===== PRÉ-VISUALIZAÇÃO com thumbs + checkbox + BORDA VERMELHA nas excluídas =====
 def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
-    """
-    Pré-visualização com miniaturas menores e checkbox em cada imagem.
-    - 'excluded_urls' (session_state) contém o que será removido na geração.
-    - thumb_px controla o tamanho da miniatura.
-    """
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
     excluded = st.session_state.excluded_urls
@@ -299,12 +305,16 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
         loja_keys = list(groups.keys())
 
     # toolbar topo
-    top_c1, top_c2, _ = st.columns([1,1,2])
+    top_c1, top_c2, top_c3 = st.columns([1,1,1])
     with top_c1:
-        if st.button("Limpar TODAS as exclusões", type="secondary", use_container_width=True):
-            excluded.clear()
+        if st.button("🔄 Fechar pré-visualização", type="secondary", use_container_width=True):
+            st.session_state.preview_mode = False
             st.rerun()
     with top_c2:
+        if st.button("🧹 Limpar TODAS as exclusões", type="secondary", use_container_width=True):
+            excluded.clear()
+            st.rerun()
+    with top_c3:
         st.caption(f"Excluídas: **{len(excluded)}** foto(s)")
 
     # render por loja (em "páginas" de max_per_slide -> simula slides)
@@ -328,18 +338,23 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
                 batch = imgs[i:i+max_per_slide]
                 cols = st.columns(len(batch))
                 for col, (url, (_loja, buf, (w_px, h_px))) in zip(cols, batch):
-                    # miniatura reduzida
+                    # miniatura com borda
                     try:
                         buf.seek(0)
-                        im = Image.open(buf).copy()
-                        im.thumbnail((thumb_px, thumb_px))
-                        col.image(im, width=thumb_px)
+                        im = Image.open(buf)
                     except Exception:
                         col.warning("Não foi possível pré-visualizar esta imagem.")
+                        continue
 
-                    # checkbox sempre visível; chave estável via md5(url)
+                    is_excluded = url in excluded
+                    border_px = 3 if is_excluded else 1
+                    border_color = "#E53935" if is_excluded else "#DDDDDD"
+                    html_img = img_to_html_with_border(im, thumb_px, border_px, border_color)
+                    col.markdown(html_img, unsafe_allow_html=True)
+
+                    # checkbox com chave estável via md5(url)
                     key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
-                    default = (url in excluded)
+                    default = is_excluded
                     checked = col.checkbox("Excluir esta foto", key=key, value=default)
                     if checked:
                         excluded.add(url)
@@ -357,45 +372,45 @@ def main_app():
 
         st.markdown("---")
         st.caption("Colunas da planilha (nomes do cabeçalho):")
-        loja_col = st.text_input("Coluna de LOJA", value="Selecione sua loja")
-        img_col  = st.text_input("Coluna de FOTOS", value="Faça o upload das fotos")
+        loja_col = st.text_input("Coluna de LOJA", value="Selecione sua loja", key="loja_col")
+        img_col  = st.text_input("Coluna de FOTOS", value="Faça o upload das fotos", key="img_col")
 
         st.markdown("---")
         st.caption("Layout")
-        max_per_slide = st.selectbox("Fotos por slide (máx.)", [1, 2, 3], index=0)
+        max_per_slide = st.selectbox("Fotos por slide (máx.)", [1, 2, 3], index=0, key="max_per_slide")
 
         st.caption("Ordenação")
         sort_mode = st.selectbox(
             "Ordenar lojas por",
             ["Ordem original do Excel", "Nome da loja (A→Z)"],
-            index=0
+            index=0, key="sort_mode"
         )
 
         st.markdown("---")
         st.caption("Aparência do slide")
-        bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF")
+        bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF", key="bg_hex")
         logo_file = st.file_uploader("Logo (PNG/JPG) — canto superior direito", type=["png","jpg","jpeg"])
-        logo_width_in = st.slider("Largura do logo (em polegadas)", 0.5, 3.0, 1.2, 0.1)
+        logo_width_in = st.slider("Largura do logo (em polegadas)", 0.5, 3.0, 1.2, 0.1, key="logo_width_in")
 
         st.markdown("---")
         st.caption("Pré-visualização")
-        thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10)
+        thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
 
         st.markdown("---")
         st.caption("Tamanho e compressão")
-        target_w = st.number_input("Largura máx (px)", 480, 4096, 1280, 10)
-        target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10)
-        limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10)
+        target_w = st.number_input("Largura máx (px)", 480, 4096, 1280, 10, key="target_w")
+        target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
+        limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10, key="limite_kb")
 
         st.markdown("---")
         st.caption("Rede e paralelismo")
-        max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12)
-        req_timeout = st.slider("Timeout por download (s)", 5, 60, 15)
+        max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
+        req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
     st.title("📸 Gerador de Book (PPT)")
     st.write("Arraste sua planilha Excel aqui (com os links das fotos).")
 
-    up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"])
+    up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload")
 
     # ===== Botões de fluxo =====
     st.markdown("### Etapas")
@@ -405,90 +420,175 @@ def main_app():
     with btn_col2:
         btn_generate = st.button("Gerar & Baixar PPT", key="btn_generate")
 
-    if not up:
-        st.info("Envie a planilha para pré-visualizar ou gerar.")
-
-    # estados
+    # ===== Estados globais =====
     if "pipeline" not in st.session_state:
         st.session_state.pipeline = {}
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
+    if "preview_mode" not in st.session_state:
+        st.session_state.preview_mode = False
 
-    if (btn_preview or btn_generate) and not up:
-        st.warning("Envie a planilha primeiro."); st.stop()
+    # ===== Processar planilha (preenche pipeline) =====
+    if btn_preview:
+        if not up:
+            st.warning("Envie a planilha primeiro.")
+        else:
+            try:
+                df = pd.read_excel(up)
+            except Exception as e:
+                st.error(f"Não consegui ler o Excel: {e}")
+                return
 
-    if up and (btn_preview or btn_generate):
-        try:
-            df = pd.read_excel(up)
-        except Exception as e:
-            st.error(f"Não consegui ler o Excel: {e}"); st.stop()
+            loja_col = st.session_state["loja_col"]
+            img_col  = st.session_state["img_col"]
 
-        # checa colunas
-        missing = [c for c in [img_col, loja_col] if c not in df.columns]
-        if missing:
-            st.error(f"Colunas não encontradas: {missing}"); st.stop()
+            missing = [c for c in [img_col, loja_col] if c not in df.columns]
+            if missing:
+                st.error(f"Colunas não encontradas: {missing}")
+                return
 
-        # lista (loja, url) sem duplicados (preserva ordem)
-        items = []
-        for _, row in df.iterrows():
-            loja = str(row[loja_col]).strip()
-            for url in extrair_links(row.get(img_col, "")):
-                if url.startswith("http"):
-                    items.append((loja, url))
-        seen, uniq = set(), []
-        for loja, url in items:
-            if url not in seen:
-                seen.add(url); uniq.append((loja, url))
-        items = uniq
+            items = []
+            for _, row in df.iterrows():
+                loja = str(row[loja_col]).strip()
+                for url in extrair_links(row.get(img_col, "")):
+                    if url.startswith("http"):
+                        items.append((loja, url))
+            seen, uniq = set(), []
+            for loja, url in items:
+                if url not in seen:
+                    seen.add(url); uniq.append((loja, url))
+            items = uniq
 
-        total = len(items)
-        if total == 0:
-            st.warning("Nenhuma URL de imagem encontrada."); st.stop()
+            # ordenação opcional por nome (mantém ordem interna de cada loja)
+            if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
+                grouped_tmp = OrderedDict()
+                for loja, url in items:
+                    grouped_tmp.setdefault(loja, []).append(url)
+                items = []
+                for loja in sorted(grouped_tmp.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold())):
+                    for url in grouped_tmp[loja]:
+                        items.append((loja, url))
 
-        st.info(f"Serão processadas **{total}** imagens.")
-        session = requests.Session()
-        adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers, max_retries=2)
-        session.mount("http://", adapter); session.mount("https://", adapter)
-        session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
+            total = len(items)
+            if total == 0:
+                st.warning("Nenhuma URL de imagem encontrada.")
+                return
 
-        prog = st.progress(0); status = st.empty()
-        resultados, falhas, done = {}, 0, 0
+            st.info(f"Serão processadas **{total}** imagens.")
+            session = requests.Session()
+            adapter = requests.adapters.HTTPAdapter(pool_connections=st.session_state["max_workers"],
+                                                    pool_maxsize=st.session_state["max_workers"],
+                                                    max_retries=2)
+            session.mount("http://", adapter); session.mount("https://", adapter)
+            session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
 
-        with ThreadPoolExecutor(max_workers=max_workers) as ex:
-            futures = {ex.submit(baixar_processar, session, url, target_w, target_h, limite_kb, req_timeout): (loja, url) for loja, url in items}
-            for fut in as_completed(futures):
-                loja, url = futures[fut]
-                ok_url, ok, buf, wh = fut.result()
-                if ok: resultados[url] = (loja, buf, wh)
-                else: falhas += 1
-                done += 1; prog.progress(int(done * 100 / total))
-                status.write(f"Processadas {done}/{total} imagens...")
+            prog = st.progress(0); status = st.empty()
+            resultados, falhas, done = {}, 0, 0
 
-        status.write(f"Concluído. Falhas: {falhas}")
+            with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
+                futures = {ex.submit(
+                    baixar_processar, session, url,
+                    st.session_state["target_w"], st.session_state["target_h"],
+                    st.session_state["limite_kb"], st.session_state["req_timeout"]
+                ): (loja, url) for loja, url in items}
+                for fut in as_completed(futures):
+                    loja, url = futures[fut]
+                    ok_url, ok, buf, wh = fut.result()
+                    if ok: resultados[url] = (loja, buf, wh)
+                    else: falhas += 1
+                    done += 1; prog.progress(int(done * 100 / total))
+                    status.write(f"Processadas {done}/{total} imagens...")
 
-        # guarda para reuso
-        st.session_state.pipeline = {
-            "items": items,
-            "resultados": resultados,
-            "falhas": falhas,
-            "settings": {
-                "max_per_slide": max_per_slide,
-                "sort_mode": sort_mode,
-                "bg_rgb": hex_to_rgb(bg_hex),
-                "logo_bytes": (logo_file.read() if logo_file else None),
-                "logo_width_in": logo_width_in,
+            status.write(f"Concluído. Falhas: {falhas}")
+
+            # guarda bytes da logo
+            logo_bytes = None
+            if logo_file := st.session_state.get("logo_file_obj"):
+                pass  # não usamos; mantido por compat
+            else:
+                # pega do uploader atual
+                uploaded_logo = st.session_state.get("logo_bytes")
+                if uploaded_logo is None and st.session_state.get("logo_width_in") is not None:
+                    # se o usuário enviou logo nesta execução
+                    pass
+            # Melhor abordagem: se logo_file existir nesta execução, capture bytes já:
+            if st.session_state.get("xlsx_upload") and st.session_state.get("logo_width_in") is not None:
+                if st.session_state.get("logo_bytes") is None and 'logo_uploader_seen' not in st.session_state:
+                    pass
+            # Captura logo bytes do uploader atual
+            if st.session_state.get("logo_bytes") is None and st.session_state.get("logo_width_in") is not None:
+                # reabra o uploader para pegar bytes se existir
+                if st.session_state.get("logo_file_cache") is not None:
+                    logo_bytes = st.session_state["logo_file_cache"]
+
+            # Simples: leia do logo_file diretamente agora e grave no pipeline
+            if (lf := st.session_state.get("logo_file_obj")):
+                logo_bytes = lf
+            else:
+                # pega do uploader da sidebar (logo_file)
+                if "sidebar_logo_seen" not in st.session_state:
+                    st.session_state["sidebar_logo_seen"] = True
+                if st.session_state.get("sidebar_logo_bytes") is None and st.session_state.get("logo_width_in") is not None:
+                    pass
+            # Na prática, o mais robusto: se o usuário mandou um logo agora, leia-o e guarde
+            if (logo := st.session_state.get("logo_uploader_latest")):
+                logo_bytes = logo
+
+            # captura logo da variável local logo_file (do uploader vivo)
+            if 'logo_bytes' not in st.session_state:
+                st.session_state.logo_bytes = None
+            if (logo_file := st.session_state.get("logo_file_widget")):
+                st.session_state.logo_bytes = logo_file
+
+            # Se o uploader retornou arquivo nesta execução (variável logo_file na sidebar), salve bytes:
+            if 'logo_bytes' in st.session_state and st.session_state.logo_bytes is None and locals().get('logo_file'):
+                try:
+                    st.session_state.logo_bytes = logo_file.read()
+                except Exception:
+                    pass
+
+            # alternativa simples: se veio logo_file neste run:
+            if logo_file is not None:
+                try:
+                    logo_bytes = logo_file.read()
+                except Exception:
+                    logo_bytes = None
+            else:
+                # mantém o que já estava salvo no pipeline anterior, se houver
+                if st.session_state.pipeline.get("settings", {}).get("logo_bytes"):
+                    logo_bytes = st.session_state.pipeline["settings"]["logo_bytes"]
+
+            # grava pipeline
+            st.session_state.pipeline = {
+                "items": items,
+                "resultados": resultados,
+                "falhas": falhas,
+                "settings": {
+                    "max_per_slide": st.session_state["max_per_slide"],
+                    "sort_mode": st.session_state["sort_mode"],
+                    "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
+                    "logo_bytes": logo_bytes,
+                    "logo_width_in": st.session_state["logo_width_in"],
+                    "thumb_px": st.session_state["thumb_px"],
+                }
             }
-        }
+            st.session_state.preview_mode = True  # <<< mantém prévia ativa após reruns
 
-        if btn_preview:
-            st.subheader("👀 Pré-visualização")
-            render_preview(items, resultados, max_per_slide, sort_mode, thumb_px)
-            st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT. Depois clique em **Gerar & Baixar PPT**.")
+    # ===== Render da PRÉVIA (persistente enquanto preview_mode=True) =====
+    if st.session_state.preview_mode and st.session_state.pipeline:
+        p = st.session_state.pipeline
+        render_preview(
+            p["items"], p["resultados"],
+            p["settings"]["max_per_slide"],
+            p["settings"]["sort_mode"],
+            p["settings"]["thumb_px"]
+        )
+        st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT. Depois clique em **Gerar & Baixar PPT**.")
 
-    # geração do PPT
+    # ===== Gerar PPT =====
     if btn_generate:
         if not st.session_state.pipeline:
-            st.warning("Faça a pré-visualização primeiro, ou clique novamente após o processamento.")
+            st.warning("Clique em **Pré-visualizar** para processar a planilha antes de gerar.")
         else:
             p = st.session_state.pipeline
             items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
@@ -518,3 +618,4 @@ else:
         if st.button("Sair", type="secondary"):
             st.session_state.clear(); st.rerun()
     main_app()
+
