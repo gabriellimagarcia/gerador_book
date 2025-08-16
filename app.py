@@ -183,7 +183,7 @@ def pick_contrast_color(r, g, b):
     brightness = (r*299 + g*587 + b*114) / 1000
     return (0,0,0) if brightness > 128 else (255,255,255)
 
-# --- slots de layout (1, 2 ou 3 por slide) ---
+# --- layout (1, 2 ou 3 por slide) ---
 def get_slots(n, prs):
     IMG_TOP = Inches(1.2)
     CONTENT_W = Inches(11)
@@ -235,16 +235,22 @@ def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
     top = Inches(0.2)
     slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
 
-def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb, logo_bytes=None, logo_width_in=1.2):
+# ===== Geração do PPT (respeita exclusões) =====
+def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
+              logo_bytes=None, logo_width_in=1.2, excluded_urls=None):
+    excluded_urls = excluded_urls or set()
+
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
     blank = prs.slide_layouts[6]
 
+    # agrupa por loja (respeitando exclusões)
     groups = OrderedDict()
     for loja, url in items:
-        if url in resultados:
-            groups.setdefault(str(loja), []).append(resultados[url])  # (loja, buf, (w,h))
+        if url in resultados and url not in excluded_urls:
+            groups.setdefault(str(loja), []).append((url, resultados[url]))  # (url, (loja, buf, (w,h)))
 
+    # ordenação
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
     else:
@@ -261,31 +267,47 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb, logo_
             add_title(slide, loja, title_rgb)
             if logo_bytes:
                 add_logo_top_right(slide, prs, logo_bytes, logo_width_in)
+
             slots = get_slots(len(batch), prs)
-            for (_loja, buf, (w_px, h_px)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+            for (url, (_loja, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
-# ======= PRÉ-VISUALIZAÇÃO =======
+# ===== PRÉ-VISUALIZAÇÃO com exclusão por checkbox =====
 def render_preview(items, resultados, max_per_slide, sort_mode):
+    # cria estado das exclusões
+    if "excluded_urls" not in st.session_state:
+        st.session_state.excluded_urls = set()
+
+    excluded = st.session_state.excluded_urls
+
+    # agrupa por loja (mantendo url para chavear exclusões)
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados:
-            groups.setdefault(str(loja), []).append(resultados[url])
+            groups.setdefault(str(loja), []).append((url, resultados[url]))  # (url, (loja, buf, (w,h)))
 
+    # ordena lojas
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
     else:
         loja_keys = list(groups.keys())
 
+    # contador
+    st.caption(f"Excluídas: **{len(excluded)}** foto(s)")
+    if st.button("Limpar exclusões", type="secondary"):
+        excluded.clear()
+        st.rerun()
+
+    # renderiza por "páginas" (simulando slides)
     for loja in loja_keys:
         imgs = groups[loja]
         with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=False):
             for i in range(0, len(imgs), max_per_slide):
                 batch = imgs[i:i+max_per_slide]
                 cols = st.columns(len(batch))
-                for col, (_loja, buf, (w_px, h_px)) in zip(cols, batch):
+                for col, (url, (_loja, buf, (w_px, h_px))) in zip(cols, batch):
                     try:
                         buf.seek(0)
                         im = Image.open(buf).copy()
@@ -293,6 +315,15 @@ def render_preview(items, resultados, max_per_slide, sort_mode):
                         col.image(im, use_column_width=True)
                     except Exception:
                         col.warning("Não foi possível pré-visualizar esta imagem.")
+
+                    # checkbox de exclusão (estado sincronizado com session_state)
+                    default = url in excluded
+                    checked = col.checkbox("Excluir", key=f"excl_{hash(url)}", value=default)
+                    if checked:
+                        excluded.add(url)
+                    else:
+                        if url in excluded:
+                            excluded.remove(url)
 
 # ===== App principal =====
 def main_app():
@@ -339,7 +370,7 @@ def main_app():
 
     up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"])
 
-    # ===== Botões de fluxo (fora da sidebar) =====
+    # ===== Botões de fluxo =====
     st.markdown("### Etapas")
     btn_col1, btn_col2 = st.columns([1, 1])
     with btn_col1:
@@ -353,6 +384,8 @@ def main_app():
     # estado para reuso
     if "pipeline" not in st.session_state:
         st.session_state.pipeline = {}
+    if "excluded_urls" not in st.session_state:
+        st.session_state.excluded_urls = set()
 
     if (btn_preview or btn_generate) and not up:
         st.warning("Envie a planilha primeiro."); st.stop()
@@ -422,8 +455,7 @@ def main_app():
         if btn_preview:
             st.subheader("👀 Pré-visualização")
             render_preview(items, resultados, max_per_slide, sort_mode)
-            st.info("Se estiver tudo certo, clique em **Gerar & Baixar PPT**.")
-        # se for gerar direto, continua abaixo
+            st.info("Marque **Excluir** nas fotos que não devem ir para o PPT. Depois clique em **Gerar & Baixar PPT**.")
 
     if btn_generate:
         if not st.session_state.pipeline:
@@ -432,14 +464,16 @@ def main_app():
             items = st.session_state.pipeline["items"]
             resultados = st.session_state.pipeline["resultados"]
             cfg = st.session_state.pipeline["settings"]
+            excluded = st.session_state.excluded_urls
 
             titulo = "Apresentacao_Relatorio_Compacta"
             ppt_bytes = gerar_ppt(
                 items, resultados, titulo,
                 cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
-                cfg["logo_bytes"], cfg["logo_width_in"]
+                cfg["logo_bytes"], cfg["logo_width_in"],
+                excluded_urls=excluded
             )
-            st.success("PPT gerado com sucesso!")
+            st.success(f"PPT gerado com sucesso! (excluídas {len(excluded)} foto(s))")
             st.download_button(
                 "⬇️ Baixar PPT",
                 data=ppt_bytes,
@@ -457,4 +491,5 @@ else:
         if st.button("Sair", type="secondary"):
             st.session_state.clear(); st.rerun()
     main_app()
+
 
