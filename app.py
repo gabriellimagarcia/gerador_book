@@ -202,12 +202,15 @@ def get_slots(n, prs):
             slots.append((left, IMG_TOP, cell_w, CONTENT_H))
         return slots
 
-def add_title(slide, text, title_rgb=(0,0,0)):
+def add_title(slide, text, title_rgb=(0,0,0), font_name="Radikal", font_size_pt=15, font_bold=True):
     TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H = Inches(0.5), Inches(0.2), Inches(12), Inches(1)
     tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H)
     tf = tx.text_frame; tf.clear()
     p = tf.paragraphs[0]; run = p.add_run(); run.text = text
-    font = run.font; font.name='Arial'; font.size=Pt(15); font.bold=True
+    font = run.font
+    font.name = font_name or "Radikal"   # se não vier nada, tenta Radikal
+    font.size = Pt(font_size_pt or 15)
+    font.bold = bool(font_bold)
     font.color.rgb = RGBColor(*title_rgb)
     p.alignment = 1
 
@@ -242,7 +245,6 @@ def add_signature_bottom_right(
     """Assinatura no canto inferior direito com margens configuráveis."""
     if not signature_bytes:
         return
-    # calcular proporção pra posicionar pelo "bottom-right"
     try:
         im = Image.open(BytesIO(signature_bytes))
         w_px, h_px = im.size
@@ -261,7 +263,8 @@ def gerar_ppt(
     logo_bytes=None, logo_width_in=1.2,
     signature_bytes=None, signature_width_in=None,
     auto_half_signature=True,
-    signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,  # <<< margens padrão mais embaixo e à direita
+    signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
+    title_font_name="Radikal", title_font_size_pt=15, title_font_bold=True,
     excluded_urls=None
 ):
     excluded_urls = excluded_urls or set()
@@ -274,7 +277,7 @@ def gerar_ppt(
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados and url not in excluded_urls:
-            groups.setdefault(str(loja), []).append((url, resultados[url]))  # (url, (loja, buf, (w,h)))
+            groups.setdefault(str(loja), []).append((url, resultados[url]))
 
     # ordenação
     if sort_mode == "Nome da loja (A→Z)":
@@ -289,7 +292,7 @@ def gerar_ppt(
         base_logo_w = logo_width_in if logo_width_in else 1.2
         signature_width = (base_logo_w / 2.0)
     else:
-        signature_width = signature_width_in or 0.6  # fallback
+        signature_width = signature_width_in or 0.6
 
     for loja in loja_keys:
         imgs = groups[loja]
@@ -297,7 +300,7 @@ def gerar_ppt(
             batch = imgs[i:i+max_per_slide]
             slide = prs.slides.add_slide(blank)
             set_slide_bg(slide, bg_rgb)
-            add_title(slide, loja, title_rgb)
+            add_title(slide, loja, title_rgb, title_font_name, title_font_size_pt, title_font_bold)
 
             if logo_bytes:
                 add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
@@ -428,7 +431,13 @@ def main_app():
         st.caption("Aparência do slide")
         bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF", key="bg_hex")
 
-        # Logo (topo direito) - persistência
+        # Fonte do título
+        st.caption("Fonte do título (precisa estar instalada no PC de quem abrir o PPT)")
+        title_font_name = st.text_input("Nome da fonte", value="Radikal", key="title_font_name")
+        title_font_size_pt = st.slider("Tamanho do título (pt)", 8, 48, 15, 1, key="title_font_size_pt")
+        title_font_bold = st.checkbox("Negrito no título", value=True, key="title_font_bold")
+
+        # Logo (topo direito)
         logo_file = st.file_uploader("Logo (PNG/JPG) — canto superior direito", type=["png","jpg","jpeg"], key="logo_uploader")
         if "logo_bytes" not in st.session_state:
             st.session_state.logo_bytes = None
@@ -457,7 +466,6 @@ def main_app():
             if "signature_width_in" not in st.session_state:
                 st.session_state.signature_width_in = float(derived_default_sig)
 
-        # >>> Margens da assinatura (quanto MENOR, mais encostada no canto)
         signature_right_margin_in = st.slider("Margem direita da ASSINATURA (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_right_margin")
         signature_bottom_margin_in = st.slider("Margem inferior da ASSINATURA (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_bottom_margin")
 
@@ -571,7 +579,7 @@ def main_app():
 
             status.write(f"Concluído. Falhas: {falhas}")
 
-            # grava pipeline (usa SEMPRE os bytes persistidos)
+            # grava pipeline (usa SEMPRE os bytes persistidos e as preferências)
             st.session_state.pipeline = {
                 "items": items,
                 "resultados": resultados,
@@ -580,6 +588,9 @@ def main_app():
                     "max_per_slide": st.session_state["max_per_slide"],
                     "sort_mode": st.session_state["sort_mode"],
                     "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
+                    "title_font_name": st.session_state["title_font_name"],
+                    "title_font_size_pt": st.session_state["title_font_size_pt"],
+                    "title_font_bold": st.session_state["title_font_bold"],
                     "logo_bytes": st.session_state.logo_bytes,
                     "logo_width_in": st.session_state["logo_width_in"],
                     "signature_bytes": st.session_state.signature_bytes,
@@ -619,6 +630,7 @@ def main_app():
                 cfg["signature_bytes"], cfg["signature_width_in"],
                 cfg["auto_half_signature"],
                 cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
+                cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
                 excluded_urls=st.session_state.excluded_urls
             )
             st.success(f"PPT gerado! (excluídas {len(st.session_state.excluded_urls)} foto(s))")
@@ -639,4 +651,3 @@ else:
         if st.button("Sair", type="secondary"):
             st.session_state.clear(); st.rerun()
     main_app()
-
