@@ -1,5 +1,6 @@
 # app.py
 import re
+import hashlib
 from io import BytesIO
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -274,15 +275,13 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
-# ===== PRÉ-VISUALIZAÇÃO com exclusão por checkbox =====
-def render_preview(items, resultados, max_per_slide, sort_mode):
-    # cria estado das exclusões
-    if "excluded_urls" not in st.session_state:
-        st.session_state.excluded_urls = set()
-
+# ===== PRÉ-VISUALIZAÇÃO com modo seleção =====
+def render_preview(items, resultados, max_per_slide, sort_mode, select_mode: bool):
+    # estados
     excluded = st.session_state.excluded_urls
+    pending = st.session_state.pending_remove  # buffer de seleção
 
-    # agrupa por loja (mantendo url para chavear exclusões)
+    # agrupa por loja (mantendo url)
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados:
@@ -294,16 +293,30 @@ def render_preview(items, resultados, max_per_slide, sort_mode):
     else:
         loja_keys = list(groups.keys())
 
-    # contador
-    st.caption(f"Excluídas: **{len(excluded)}** foto(s)")
-    if st.button("Limpar exclusões", type="secondary"):
-        excluded.clear()
-        st.rerun()
+    # sumário
+    st.caption(f"Excluídas permanentemente: **{len(excluded)}** · Selecionadas agora: **{len(pending)}**")
 
-    # renderiza por "páginas" (simulando slides)
+    # render por "páginas" (simulando slides)
     for loja in loja_keys:
         imgs = groups[loja]
         with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=False):
+            # atalhos por loja (só no modo seleção)
+            if select_mode:
+                c1, c2 = st.columns([1,1])
+                with c1:
+                    if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}"):
+                        for url, _ in imgs:
+                            if url not in excluded:
+                                pending.add(url)
+                        st.rerun()
+                with c2:
+                    if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}"):
+                        for url, _ in imgs:
+                            if url in pending:
+                                pending.remove(url)
+                        st.rerun()
+
+            # grid de miniaturas
             for i in range(0, len(imgs), max_per_slide):
                 batch = imgs[i:i+max_per_slide]
                 cols = st.columns(len(batch))
@@ -316,14 +329,19 @@ def render_preview(items, resultados, max_per_slide, sort_mode):
                     except Exception:
                         col.warning("Não foi possível pré-visualizar esta imagem.")
 
-                    # checkbox de exclusão (estado sincronizado com session_state)
-                    default = url in excluded
-                    checked = col.checkbox("Excluir", key=f"excl_{hash(url)}", value=default)
-                    if checked:
-                        excluded.add(url)
-                    else:
-                        if url in excluded:
-                            excluded.remove(url)
+                    # status/controle
+                    if url in excluded:
+                        col.caption("🚫 Já excluída")
+                    elif select_mode:
+                        # checkbox só aparece em modo seleção e NÃO em itens já excluídos
+                        key = "sel_" + hashlib.md5(url.encode("utf-8")).hexdigest()
+                        default = url in pending
+                        checked = col.checkbox("Selecionar p/ remover", key=key, value=default)
+                        if checked:
+                            pending.add(url)
+                        else:
+                            if url in pending:
+                                pending.remove(url)
 
 # ===== App principal =====
 def main_app():
@@ -351,7 +369,7 @@ def main_app():
         st.markdown("---")
         st.caption("Aparência do slide")
         bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF")
-        logo_file = st.file_uploader("Logo (PNG/JPG) — aparece no canto superior direito", type=["png","jpg","jpeg"])
+        logo_file = st.file_uploader("Logo (PNG/JPG) — canto superior direito", type=["png","jpg","jpeg"])
         logo_width_in = st.slider("Largura do logo (em polegadas)", 0.5, 3.0, 1.2, 0.1)
 
         st.markdown("---")
@@ -381,12 +399,48 @@ def main_app():
     if not up:
         st.info("Envie a planilha para pré-visualizar ou gerar.")
 
-    # estado para reuso
+    # ===== Estados globais =====
     if "pipeline" not in st.session_state:
         st.session_state.pipeline = {}
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
+    if "pending_remove" not in st.session_state:
+        st.session_state.pending_remove = set()
+    if "select_mode" not in st.session_state:
+        st.session_state.select_mode = False
 
+    # ===== Toolbar superior: remover fotos / aplicar / cancelar / reverter =====
+    tool = st.container()
+    with tool:
+        disabled_toolbar = not bool(st.session_state.pipeline)
+        colA, colB, colC, colD = st.columns([1,1,1,1])
+        if not st.session_state.select_mode:
+            with colA:
+                if st.button("🗑️ Remover fotos", disabled=disabled_toolbar, key="enter_select"):
+                    st.session_state.select_mode = True
+                    st.session_state.pending_remove = set()
+                    st.rerun()
+            with colD:
+                if st.button("↩️ Reverter exclusões", disabled=disabled_toolbar or len(st.session_state.excluded_urls)==0, key="revert_all"):
+                    st.session_state.excluded_urls.clear()
+                    st.experimental_rerun()
+        else:
+            with colA:
+                if st.button("✅ Aplicar exclusões", key="apply_sel"):
+                    st.session_state.excluded_urls |= st.session_state.pending_remove
+                    st.session_state.pending_remove = set()
+                    st.session_state.select_mode = False
+                    st.success("Exclusões aplicadas.")
+                    st.experimental_rerun()
+            with colB:
+                if st.button("❌ Cancelar seleção", key="cancel_sel"):
+                    st.session_state.pending_remove = set()
+                    st.session_state.select_mode = False
+                    st.experimental_rerun()
+            with colD:
+                st.caption(f"Selecionadas agora: {len(st.session_state.pending_remove)}")
+
+    # ===== Processamento (preview/gerar) =====
     if (btn_preview or btn_generate) and not up:
         st.warning("Envie a planilha primeiro."); st.stop()
 
@@ -396,11 +450,17 @@ def main_app():
         except Exception as e:
             st.error(f"Não consegui ler o Excel: {e}"); st.stop()
 
+        loja_col = st.session_state.get('loja_col', None) or st.session_state._old_state.get('loja_col') if hasattr(st.session_state, '_old_state') else None
+        # (mantemos os valores do sidebar diretamente)
+        loja_col = st.session_state.get('loja_col', None) or "Selecione sua loja"
+        img_col  = st.session_state.get('img_col', None) or "Faça o upload das fotos"
+
+        # checa colunas
         missing = [c for c in [img_col, loja_col] if c not in df.columns]
         if missing:
             st.error(f"Colunas não encontradas: {missing}"); st.stop()
 
-        # monta lista (loja, url) e remove duplicados preservando ordem
+        # lista (loja, url) sem duplicados
         items = []
         for _, row in df.iterrows():
             loja = str(row[loja_col]).strip()
@@ -438,42 +498,41 @@ def main_app():
 
         status.write(f"Concluído. Falhas: {falhas}")
 
-        # guarda para reuso entre preview e geração
+        # guarda para reuso
         st.session_state.pipeline = {
             "items": items,
             "resultados": resultados,
             "falhas": falhas,
             "settings": {
-                "max_per_slide": max_per_slide,
-                "sort_mode": sort_mode,
-                "bg_rgb": hex_to_rgb(bg_hex),
+                "max_per_slide": st.session_state.get('max_per_slide', None) or max_per_slide,
+                "sort_mode": st.session_state.get('sort_mode', None) or sort_mode,
+                "bg_rgb": hex_to_rgb(st.session_state.get('bg_hex', None) or bg_hex),
                 "logo_bytes": (logo_file.read() if logo_file else None),
-                "logo_width_in": logo_width_in,
+                "logo_width_in": st.session_state.get('logo_width_in', None) or logo_width_in,
             }
         }
 
         if btn_preview:
             st.subheader("👀 Pré-visualização")
-            render_preview(items, resultados, max_per_slide, sort_mode)
-            st.info("Marque **Excluir** nas fotos que não devem ir para o PPT. Depois clique em **Gerar & Baixar PPT**.")
+            render_preview(items, resultados, max_per_slide, sort_mode, st.session_state.select_mode)
+            st.info("Use **🗑️ Remover fotos** para entrar no modo seleção, marque as fotos e clique **✅ Aplicar exclusões**.")
 
+    # ===== Geração do PPT =====
     if btn_generate:
         if not st.session_state.pipeline:
             st.warning("Faça a pré-visualização primeiro, ou clique novamente após o processamento.")
         else:
-            items = st.session_state.pipeline["items"]
-            resultados = st.session_state.pipeline["resultados"]
-            cfg = st.session_state.pipeline["settings"]
-            excluded = st.session_state.excluded_urls
+            p = st.session_state.pipeline
+            items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
 
             titulo = "Apresentacao_Relatorio_Compacta"
             ppt_bytes = gerar_ppt(
                 items, resultados, titulo,
                 cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
                 cfg["logo_bytes"], cfg["logo_width_in"],
-                excluded_urls=excluded
+                excluded_urls=st.session_state.excluded_urls
             )
-            st.success(f"PPT gerado com sucesso! (excluídas {len(excluded)} foto(s))")
+            st.success(f"PPT gerado! (excluídas {len(st.session_state.excluded_urls)} foto(s))")
             st.download_button(
                 "⬇️ Baixar PPT",
                 data=ppt_bytes,
@@ -491,5 +550,6 @@ else:
         if st.button("Sair", type="secondary"):
             st.session_state.clear(); st.rerun()
     main_app()
+
 
 
