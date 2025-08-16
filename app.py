@@ -94,7 +94,7 @@ def apply_theme(dark: bool):
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
-# ===== Login simples (didático) =====
+# ===== Login simples =====
 ALLOWED_USERS = {
     "lucas.costa@mkthouse.com.br": "mudar12345",
     "gabriel.garcia@mkthouse.com.br": "Peter2025!",
@@ -230,7 +230,16 @@ def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
     buf.seek(0)
     slide.shapes.add_picture(buf, x, y, width=final_w, height=final_h)
 
-def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb):
+def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
+    """Adiciona logo no canto superior direito com largura fixa (em inches)."""
+    if not logo_bytes:
+        return
+    left = prs.slide_width - Inches(0.5) - Inches(logo_width_in)
+    top = Inches(0.2)
+    pic = slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
+    return pic
+
+def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb, logo_bytes=None, logo_width_in=1.2):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
     blank = prs.slide_layouts[6]
@@ -247,7 +256,7 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb):
     else:
         loja_keys = list(groups.keys())
 
-    # cor do título com auto-contraste ao fundo
+    # título com auto-contraste ao fundo
     title_rgb = pick_contrast_color(*bg_rgb)
 
     # gera slides
@@ -258,6 +267,9 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb):
             slide = prs.slides.add_slide(blank)
             set_slide_bg(slide, bg_rgb)
             add_title(slide, loja, title_rgb)
+            if logo_bytes:
+                add_logo_top_right(slide, prs, logo_bytes, logo_width_in)
+
             slots = get_slots(len(batch), prs)
             for (_loja, buf, (w_px, h_px)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
@@ -290,6 +302,8 @@ def main_app():
         st.markdown("---")
         st.caption("Aparência do slide")
         bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF")
+        logo_file = st.file_uploader("Logo (PNG/JPG) — aparece no canto superior direito", type=["png","jpg","jpeg"])
+        logo_width_in = st.slider("Largura do logo (em polegadas)", 0.5, 3.0, 1.2, 0.1)
 
         st.markdown("---")
         st.caption("Tamanho e compressão")
@@ -360,7 +374,8 @@ def main_app():
         status.write(f"Concluído. Falhas: {falhas}")
         titulo = "Apresentacao_Relatorio_Compacta"
         bg_rgb = hex_to_rgb(bg_hex)
-        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb)
+        logo_bytes = logo_file.read() if logo_file else None
+        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb, logo_bytes, logo_width_in)
         st.success("PPT gerado com sucesso!")
         st.download_button("⬇️ Baixar PPT", data=ppt_bytes, file_name=f"{titulo}.pptx",
                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
