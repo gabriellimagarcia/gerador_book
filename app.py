@@ -1,7 +1,6 @@
 # app.py
 import re
 import hashlib
-import base64
 from io import BytesIO
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -96,7 +95,7 @@ def apply_theme(dark: bool):
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
-# ===== Login (lista completa restaurada) =====
+# ===== Login simples =====
 ALLOWED_USERS = {
     "lucas.costa@mkthouse.com.br": "mudar12345",
     "gabriel.garcia@mkthouse.com.br": "Peter2025!",
@@ -155,4 +154,367 @@ def comprimir_jpeg_binsearch(img: Image.Image, limite_kb: int) -> BytesIO:
         if buf.tell()/1024 <= limite_kb: best = buf; lo = mid+1
         else: hi = mid-1
     if best is None:
-        best = BytesIO(); img.save(best, "JPEG", quality=35, o
+        best = BytesIO(); img.save(best, "JPEG", quality=35, optimize=True, progressive=True, subsampling=2)
+    best.seek(0); return best
+
+def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int):
+    try:
+        r = session.get(url, timeout=timeout, stream=True)
+        if r.status_code != 200: return (url, False, None, None)
+        img = Image.open(BytesIO(r.content))
+        img = redimensionar(img, max_w, max_h)
+        buf = comprimir_jpeg_binsearch(img, limite_kb)
+        w, h = Image.open(buf).size
+        buf.seek(0)
+        return (url, True, buf, (w, h))
+    except Exception:
+        return (url, False, None, None)
+
+def px_to_inches(px): return Inches(px / 96.0)
+
+# --- helpers de aparência ---
+def hex_to_rgb(hex_str: str):
+    s = hex_str.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join([c*2 for c in s])
+    r = int(s[0:2], 16); g = int(s[2:4], 16); b = int(s[4:6], 16)
+    return r, g, b
+
+def pick_contrast_color(r, g, b):
+    brightness = (r*299 + g*587 + b*114) / 1000
+    return (0,0,0) if brightness > 128 else (255,255,255)
+
+# --- layout (1, 2 ou 3 por slide) ---
+def get_slots(n, prs):
+    IMG_TOP = Inches(1.2)
+    CONTENT_W = Inches(11)
+    CONTENT_H = Inches(6)
+    GAP = Inches(0.2)
+    start_left = (prs.slide_width - CONTENT_W) / 2
+    if n == 1:
+        return [(start_left, IMG_TOP, CONTENT_W, CONTENT_H)]
+    else:
+        cols = n
+        total_gap = GAP * (cols - 1)
+        cell_w = (CONTENT_W - total_gap) / cols
+        slots = []
+        for c in range(cols):
+            left = start_left + c * (cell_w + GAP)
+            slots.append((left, IMG_TOP, cell_w, CONTENT_H))
+        return slots
+
+def add_title(slide, text, title_rgb=(0,0,0)):
+    TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H = Inches(0.5), Inches(0.2), Inches(12), Inches(1)
+    tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H)
+    tf = tx.text_frame; tf.clear()
+    p = tf.paragraphs[0]; run = p.add_run(); run.text = text
+    font = run.font; font.name='Arial'; font.size=Pt(15); font.bold=True
+    font.color.rgb = RGBColor(*title_rgb)
+    p.alignment = 1
+
+def set_slide_bg(slide, rgb_tuple):
+    bg = slide.background
+    fill = bg.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor(*rgb_tuple)
+
+def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
+    img_w_in = px_to_inches(w_px)
+    img_h_in = px_to_inches(h_px)
+    ratio = min(float(max_w_in)/float(img_w_in), float(max_h_in)/float(img_h_in), 1.0)
+    final_w = img_w_in * ratio
+    final_h = img_h_in * ratio
+    x = left + (max_w_in - final_w)/2
+    y = top  + (max_h_in - final_h)/2
+    buf.seek(0)
+    slide.shapes.add_picture(buf, x, y, width=final_w, height=final_h)
+
+def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
+    if not logo_bytes:
+        return
+    left = prs.slide_width - Inches(0.5) - Inches(logo_width_in)
+    top = Inches(0.2)
+    slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
+
+# ===== Geração do PPT (respeita exclusões) =====
+def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
+              logo_bytes=None, logo_width_in=1.2, excluded_urls=None):
+    excluded_urls = excluded_urls or set()
+
+    prs = Presentation()
+    prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
+    blank = prs.slide_layouts[6]
+
+    # agrupa por loja (respeitando exclusões)
+    groups = OrderedDict()
+    for loja, url in items:
+        if url in resultados and url not in excluded_urls:
+            groups.setdefault(str(loja), []).append((url, resultados[url]))  # (url, (loja, buf, (w,h)))
+
+    # ordenação
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+    else:
+        loja_keys = list(groups.keys())
+
+    title_rgb = pick_contrast_color(*bg_rgb)
+
+    for loja in loja_keys:
+        imgs = groups[loja]
+        for i in range(0, len(imgs), max_per_slide):
+            batch = imgs[i:i+max_per_slide]
+            slide = prs.slides.add_slide(blank)
+            set_slide_bg(slide, bg_rgb)
+            add_title(slide, loja, title_rgb)
+            if logo_bytes:
+                add_logo_top_right(slide, prs, logo_bytes, logo_width_in)
+
+            slots = get_slots(len(batch), prs)
+            for (url, (_loja, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+
+    out = BytesIO(); prs.save(out); out.seek(0); return out
+
+# ===== PRÉ-VISUALIZAÇÃO com thumbs menores + checkbox por foto =====
+def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
+    """
+    Pré-visualização com miniaturas menores e checkbox em cada imagem.
+    - 'excluded_urls' (session_state) contém o que será removido na geração.
+    - thumb_px controla o tamanho da miniatura.
+    """
+    if "excluded_urls" not in st.session_state:
+        st.session_state.excluded_urls = set()
+    excluded = st.session_state.excluded_urls
+
+    # agrupa por loja mantendo (url, payload)
+    groups = OrderedDict()
+    for loja, url in items:
+        if url in resultados:
+            groups.setdefault(str(loja), []).append((url, resultados[url]))  # (url, (loja, buf, (w,h)))
+
+    # ordenação
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+    else:
+        loja_keys = list(groups.keys())
+
+    # toolbar topo
+    top_c1, top_c2, _ = st.columns([1,1,2])
+    with top_c1:
+        if st.button("Limpar TODAS as exclusões", type="secondary", use_container_width=True):
+            excluded.clear()
+            st.rerun()
+    with top_c2:
+        st.caption(f"Excluídas: **{len(excluded)}** foto(s)")
+
+    # render por loja (em "páginas" de max_per_slide -> simula slides)
+    for loja in loja_keys:
+        imgs = groups[loja]
+        with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=False):
+            # ações por loja
+            lc1, lc2, _ = st.columns([1,1,2])
+            with lc1:
+                if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}"):
+                    for url, _ in imgs:
+                        excluded.add(url)
+                    st.rerun()
+            with lc2:
+                if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}"):
+                    for url, _ in imgs:
+                        excluded.discard(url)
+                    st.rerun()
+
+            for i in range(0, len(imgs), max_per_slide):
+                batch = imgs[i:i+max_per_slide]
+                cols = st.columns(len(batch))
+                for col, (url, (_loja, buf, (w_px, h_px))) in zip(cols, batch):
+                    # miniatura reduzida
+                    try:
+                        buf.seek(0)
+                        im = Image.open(buf).copy()
+                        im.thumbnail((thumb_px, thumb_px))
+                        col.image(im, width=thumb_px)
+                    except Exception:
+                        col.warning("Não foi possível pré-visualizar esta imagem.")
+
+                    # checkbox sempre visível; chave estável via md5(url)
+                    key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
+                    default = (url in excluded)
+                    checked = col.checkbox("Excluir esta foto", key=key, value=default)
+                    if checked:
+                        excluded.add(url)
+                    else:
+                        excluded.discard(url)
+
+                st.divider()
+
+# ===== App principal =====
+def main_app():
+    with st.sidebar:
+        st.header("⚙️ Preferências")
+        st.session_state.dark_mode = st.toggle("Usar tema escuro", value=st.session_state.dark_mode)
+        apply_theme(st.session_state.dark_mode)
+
+        st.markdown("---")
+        st.caption("Colunas da planilha (nomes do cabeçalho):")
+        loja_col = st.text_input("Coluna de LOJA", value="Selecione sua loja")
+        img_col  = st.text_input("Coluna de FOTOS", value="Faça o upload das fotos")
+
+        st.markdown("---")
+        st.caption("Layout")
+        max_per_slide = st.selectbox("Fotos por slide (máx.)", [1, 2, 3], index=0)
+
+        st.caption("Ordenação")
+        sort_mode = st.selectbox(
+            "Ordenar lojas por",
+            ["Ordem original do Excel", "Nome da loja (A→Z)"],
+            index=0
+        )
+
+        st.markdown("---")
+        st.caption("Aparência do slide")
+        bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF")
+        logo_file = st.file_uploader("Logo (PNG/JPG) — canto superior direito", type=["png","jpg","jpeg"])
+        logo_width_in = st.slider("Largura do logo (em polegadas)", 0.5, 3.0, 1.2, 0.1)
+
+        st.markdown("---")
+        st.caption("Pré-visualização")
+        thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10)
+
+        st.markdown("---")
+        st.caption("Tamanho e compressão")
+        target_w = st.number_input("Largura máx (px)", 480, 4096, 1280, 10)
+        target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10)
+        limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10)
+
+        st.markdown("---")
+        st.caption("Rede e paralelismo")
+        max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12)
+        req_timeout = st.slider("Timeout por download (s)", 5, 60, 15)
+
+    st.title("📸 Gerador de Book (PPT)")
+    st.write("Arraste sua planilha Excel aqui (com os links das fotos).")
+
+    up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"])
+
+    # ===== Botões de fluxo =====
+    st.markdown("### Etapas")
+    btn_col1, btn_col2 = st.columns([1, 1])
+    with btn_col1:
+        btn_preview = st.button("Pré-visualizar", key="btn_preview")
+    with btn_col2:
+        btn_generate = st.button("Gerar & Baixar PPT", key="btn_generate")
+
+    if not up:
+        st.info("Envie a planilha para pré-visualizar ou gerar.")
+
+    # estados
+    if "pipeline" not in st.session_state:
+        st.session_state.pipeline = {}
+    if "excluded_urls" not in st.session_state:
+        st.session_state.excluded_urls = set()
+
+    if (btn_preview or btn_generate) and not up:
+        st.warning("Envie a planilha primeiro."); st.stop()
+
+    if up and (btn_preview or btn_generate):
+        try:
+            df = pd.read_excel(up)
+        except Exception as e:
+            st.error(f"Não consegui ler o Excel: {e}"); st.stop()
+
+        # checa colunas
+        missing = [c for c in [img_col, loja_col] if c not in df.columns]
+        if missing:
+            st.error(f"Colunas não encontradas: {missing}"); st.stop()
+
+        # lista (loja, url) sem duplicados (preserva ordem)
+        items = []
+        for _, row in df.iterrows():
+            loja = str(row[loja_col]).strip()
+            for url in extrair_links(row.get(img_col, "")):
+                if url.startswith("http"):
+                    items.append((loja, url))
+        seen, uniq = set(), []
+        for loja, url in items:
+            if url not in seen:
+                seen.add(url); uniq.append((loja, url))
+        items = uniq
+
+        total = len(items)
+        if total == 0:
+            st.warning("Nenhuma URL de imagem encontrada."); st.stop()
+
+        st.info(f"Serão processadas **{total}** imagens.")
+        session = requests.Session()
+        adapter = requests.adapters.HTTPAdapter(pool_connections=max_workers, pool_maxsize=max_workers, max_retries=2)
+        session.mount("http://", adapter); session.mount("https://", adapter)
+        session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
+
+        prog = st.progress(0); status = st.empty()
+        resultados, falhas, done = {}, 0, 0
+
+        with ThreadPoolExecutor(max_workers=max_workers) as ex:
+            futures = {ex.submit(baixar_processar, session, url, target_w, target_h, limite_kb, req_timeout): (loja, url) for loja, url in items}
+            for fut in as_completed(futures):
+                loja, url = futures[fut]
+                ok_url, ok, buf, wh = fut.result()
+                if ok: resultados[url] = (loja, buf, wh)
+                else: falhas += 1
+                done += 1; prog.progress(int(done * 100 / total))
+                status.write(f"Processadas {done}/{total} imagens...")
+
+        status.write(f"Concluído. Falhas: {falhas}")
+
+        # guarda para reuso
+        st.session_state.pipeline = {
+            "items": items,
+            "resultados": resultados,
+            "falhas": falhas,
+            "settings": {
+                "max_per_slide": max_per_slide,
+                "sort_mode": sort_mode,
+                "bg_rgb": hex_to_rgb(bg_hex),
+                "logo_bytes": (logo_file.read() if logo_file else None),
+                "logo_width_in": logo_width_in,
+            }
+        }
+
+        if btn_preview:
+            st.subheader("👀 Pré-visualização")
+            render_preview(items, resultados, max_per_slide, sort_mode, thumb_px)
+            st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT. Depois clique em **Gerar & Baixar PPT**.")
+
+    # geração do PPT
+    if btn_generate:
+        if not st.session_state.pipeline:
+            st.warning("Faça a pré-visualização primeiro, ou clique novamente após o processamento.")
+        else:
+            p = st.session_state.pipeline
+            items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
+
+            titulo = "Apresentacao_Relatorio_Compacta"
+            ppt_bytes = gerar_ppt(
+                items, resultados, titulo,
+                cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
+                cfg["logo_bytes"], cfg["logo_width_in"],
+                excluded_urls=st.session_state.excluded_urls
+            )
+            st.success(f"PPT gerado! (excluídas {len(st.session_state.excluded_urls)} foto(s))")
+            st.download_button(
+                "⬇️ Baixar PPT",
+                data=ppt_bytes,
+                file_name=f"{titulo}.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            )
+
+# ===== Roteamento =====
+if not st.session_state.auth:
+    do_login()
+else:
+    c1, c2 = st.columns([1,1])
+    with c1: st.caption(f"Logado como: **{st.session_state.user_email}**")
+    with c2:
+        if st.button("Sair", type="secondary"):
+            st.session_state.clear(); st.rerun()
+    main_app()
