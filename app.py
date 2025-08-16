@@ -175,7 +175,7 @@ def px_to_inches(px): return Inches(px / 96.0)
 def get_slots(n, prs):
     """Retorna [(left, top, max_w, max_h)] para n imagens no slide."""
     IMG_TOP = Inches(1.2)
-    CONTENT_W = Inches(11)    # mesma largura útil de antes
+    CONTENT_W = Inches(11)    # largura útil
     CONTENT_H = Inches(6)
     GAP = Inches(0.2)
 
@@ -212,7 +212,7 @@ def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
     buf.seek(0)
     slide.shapes.add_picture(buf, x, y, width=final_w, height=final_h)
 
-def gerar_ppt(items, resultados, titulo, max_per_slide):
+def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
     blank = prs.slide_layouts[6]
@@ -223,15 +223,22 @@ def gerar_ppt(items, resultados, titulo, max_per_slide):
         if url in resultados:
             groups.setdefault(str(loja), []).append(resultados[url])  # (loja, buf, (w,h))
 
-    # --- para cada loja, cria slides em lotes de 'max_per_slide' ---
-    for loja, imgs in groups.items():
+    # --- ordenação das lojas ---
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+    else:
+        loja_keys = list(groups.keys())  # ordem original do Excel
+
+    # --- gera os slides por loja em lotes de 'max_per_slide' ---
+    for loja in loja_keys:
+        imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
             batch = imgs[i:i+max_per_slide]
             slide = prs.slides.add_slide(blank)
             add_title(slide, loja)
 
             slots = get_slots(len(batch), prs)
-            for ( _loja, buf, (w_px, h_px) ), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+            for (_loja, buf, (w_px, h_px)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
@@ -251,6 +258,13 @@ def main_app():
         st.markdown("---")
         st.caption("Layout")
         max_per_slide = st.selectbox("Fotos por slide (máx.)", [1, 2, 3], index=0)
+
+        st.caption("Ordenação")
+        sort_mode = st.selectbox(
+            "Ordenar lojas por",
+            ["Ordem original do Excel", "Nome da loja (A→Z)"],
+            index=0
+        )
 
         st.markdown("---")
         st.caption("Tamanho e compressão")
@@ -320,7 +334,7 @@ def main_app():
 
         status.write(f"Concluído. Falhas: {falhas}")
         titulo = "Apresentacao_Relatorio_Compacta"
-        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide)
+        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode)
         st.success("PPT gerado com sucesso!")
         st.download_button("⬇️ Baixar PPT", data=ppt_bytes, file_name=f"{titulo}.pptx",
                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
