@@ -16,7 +16,7 @@ st.set_page_config(page_title="Gerador de Book", page_icon="📸", layout="wide"
 
 # ===== Tema (Claro predominante branco, acento LARANJA e detalhes PRETO) =====
 def apply_theme(dark: bool):
-    ORANGE = "#FF7A00"   # laranja principal
+    ORANGE = "#FF7A00"
     ORANGE_HOVER = "#E66E00"
     BLACK = "#111111"
     GRAY_BG = "#f6f6f7"
@@ -48,7 +48,7 @@ def apply_theme(dark: bool):
             background: var(--accent); color: white; border: none; border-radius: 10px;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover {{
-            background: var(--accent-hover); color: white;
+            background: {ORANGE_HOVER}; color: white;
         }}
         .stProgress > div > div {{ background-color: var(--accent); }}
         a {{ color: var(--accent); }}
@@ -81,7 +81,7 @@ def apply_theme(dark: bool):
             background: var(--accent); color: white; border: none; border-radius: 10px;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover {{
-            background: var(--accent-hover); color: white;
+            background: {ORANGE_HOVER}; color: white;
         }}
         .stSlider [data-baseweb="slider"] > div > div > div {{ background: rgba(255,122,0,0.2); }}
         .stSlider [data-baseweb="slider"] > div > div > div > div {{ background: var(--accent); }}
@@ -180,13 +180,11 @@ def hex_to_rgb(hex_str: str):
     return r, g, b
 
 def pick_contrast_color(r, g, b):
-    # luminância perceptiva: 0..255; threshold ~128
     brightness = (r*299 + g*587 + b*114) / 1000
     return (0,0,0) if brightness > 128 else (255,255,255)
 
 # --- slots de layout (1, 2 ou 3 por slide) ---
 def get_slots(n, prs):
-    """Retorna [(left, top, max_w, max_h)] para n imagens no slide."""
     IMG_TOP = Inches(1.2)
     CONTENT_W = Inches(11)
     CONTENT_H = Inches(6)
@@ -231,35 +229,29 @@ def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
     slide.shapes.add_picture(buf, x, y, width=final_w, height=final_h)
 
 def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
-    """Adiciona logo no canto superior direito com largura fixa (em inches)."""
     if not logo_bytes:
         return
     left = prs.slide_width - Inches(0.5) - Inches(logo_width_in)
     top = Inches(0.2)
-    pic = slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
-    return pic
+    slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
 
 def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb, logo_bytes=None, logo_width_in=1.2):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
     blank = prs.slide_layouts[6]
 
-    # agrupa por loja mantendo ordem original
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados:
             groups.setdefault(str(loja), []).append(resultados[url])  # (loja, buf, (w,h))
 
-    # ordenação das lojas
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
     else:
         loja_keys = list(groups.keys())
 
-    # título com auto-contraste ao fundo
     title_rgb = pick_contrast_color(*bg_rgb)
 
-    # gera slides
     for loja in loja_keys:
         imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
@@ -269,12 +261,38 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb, logo_
             add_title(slide, loja, title_rgb)
             if logo_bytes:
                 add_logo_top_right(slide, prs, logo_bytes, logo_width_in)
-
             slots = get_slots(len(batch), prs)
             for (_loja, buf, (w_px, h_px)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
+
+# ======= PRÉ-VISUALIZAÇÃO =======
+def render_preview(items, resultados, max_per_slide, sort_mode):
+    groups = OrderedDict()
+    for loja, url in items:
+        if url in resultados:
+            groups.setdefault(str(loja), []).append(resultados[url])
+
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+    else:
+        loja_keys = list(groups.keys())
+
+    for loja in loja_keys:
+        imgs = groups[loja]
+        with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=False):
+            for i in range(0, len(imgs), max_per_slide):
+                batch = imgs[i:i+max_per_slide]
+                cols = st.columns(len(batch))
+                for col, (_loja, buf, (w_px, h_px)) in zip(cols, batch):
+                    try:
+                        buf.seek(0)
+                        im = Image.open(buf).copy()
+                        im.thumbnail((512, 512))
+                        col.image(im, use_column_width=True)
+                    except Exception:
+                        col.warning("Não foi possível pré-visualizar esta imagem.")
 
 # ===== App principal =====
 def main_app():
@@ -320,12 +338,26 @@ def main_app():
     st.write("Arraste sua planilha Excel aqui (com os links das fotos).")
 
     up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"])
-    gerar = st.button("🚀 Gerar PPT")
 
-    if gerar and not up:
+    # ===== Botões de fluxo (fora da sidebar) =====
+    st.markdown("### Etapas")
+    btn_col1, btn_col2 = st.columns([1, 1])
+    with btn_col1:
+        btn_preview = st.button("Pré-visualizar", key="btn_preview")
+    with btn_col2:
+        btn_generate = st.button("Gerar & Baixar PPT", key="btn_generate")
+
+    if not up:
+        st.info("Envie a planilha para pré-visualizar ou gerar.")
+
+    # estado para reuso
+    if "pipeline" not in st.session_state:
+        st.session_state.pipeline = {}
+
+    if (btn_preview or btn_generate) and not up:
         st.warning("Envie a planilha primeiro."); st.stop()
 
-    if up and gerar:
+    if up and (btn_preview or btn_generate):
         try:
             df = pd.read_excel(up)
         except Exception as e:
@@ -372,13 +404,48 @@ def main_app():
                 status.write(f"Processadas {done}/{total} imagens...")
 
         status.write(f"Concluído. Falhas: {falhas}")
-        titulo = "Apresentacao_Relatorio_Compacta"
-        bg_rgb = hex_to_rgb(bg_hex)
-        logo_bytes = logo_file.read() if logo_file else None
-        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb, logo_bytes, logo_width_in)
-        st.success("PPT gerado com sucesso!")
-        st.download_button("⬇️ Baixar PPT", data=ppt_bytes, file_name=f"{titulo}.pptx",
-                           mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
+
+        # guarda para reuso entre preview e geração
+        st.session_state.pipeline = {
+            "items": items,
+            "resultados": resultados,
+            "falhas": falhas,
+            "settings": {
+                "max_per_slide": max_per_slide,
+                "sort_mode": sort_mode,
+                "bg_rgb": hex_to_rgb(bg_hex),
+                "logo_bytes": (logo_file.read() if logo_file else None),
+                "logo_width_in": logo_width_in,
+            }
+        }
+
+        if btn_preview:
+            st.subheader("👀 Pré-visualização")
+            render_preview(items, resultados, max_per_slide, sort_mode)
+            st.info("Se estiver tudo certo, clique em **Gerar & Baixar PPT**.")
+        # se for gerar direto, continua abaixo
+
+    if btn_generate:
+        if not st.session_state.pipeline:
+            st.warning("Faça a pré-visualização primeiro, ou clique novamente após o processamento.")
+        else:
+            items = st.session_state.pipeline["items"]
+            resultados = st.session_state.pipeline["resultados"]
+            cfg = st.session_state.pipeline["settings"]
+
+            titulo = "Apresentacao_Relatorio_Compacta"
+            ppt_bytes = gerar_ppt(
+                items, resultados, titulo,
+                cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
+                cfg["logo_bytes"], cfg["logo_width_in"]
+            )
+            st.success("PPT gerado com sucesso!")
+            st.download_button(
+                "⬇️ Baixar PPT",
+                data=ppt_bytes,
+                file_name=f"{titulo}.pptx",
+                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            )
 
 # ===== Roteamento =====
 if not st.session_state.auth:
@@ -390,3 +457,4 @@ else:
         if st.button("Sair", type="secondary"):
             st.session_state.clear(); st.rerun()
     main_app()
+
