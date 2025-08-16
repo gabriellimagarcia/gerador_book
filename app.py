@@ -16,7 +16,7 @@ from pptx.dml.color import RGBColor
 
 st.set_page_config(page_title="Gerador de Book", page_icon="📸", layout="wide")
 
-# ===== Tema (Claro predominante branco, acento LARANJA e detalhes PRETO) =====
+# ===== Tema (claro predominante, acento laranja e detalhes preto) =====
 def apply_theme(dark: bool):
     ORANGE = "#FF7A00"
     ORANGE_HOVER = "#E66E00"
@@ -32,7 +32,6 @@ def apply_theme(dark: bool):
             --text: #f5f5f5;
             --bg: #0e1117;
             --panel: #11151c;
-            --muted: #a3a3a3;
         }}
         .stApp {{ background-color: var(--bg); color: var(--text); }}
         section[data-testid="stSidebar"] > div {{
@@ -50,7 +49,7 @@ def apply_theme(dark: bool):
             background: var(--accent); color: white; border: none; border-radius: 10px;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover {{
-            background: {ORANGE_HOVER}; color: white;
+            background: var(--accent-hover); color: white;
         }}
         .stProgress > div > div {{ background-color: var(--accent); }}
         a {{ color: var(--accent); }}
@@ -65,7 +64,6 @@ def apply_theme(dark: bool):
             --text: {BLACK};
             --bg: #ffffff;
             --panel: {GRAY_BG};
-            --muted: #5f6368;
         }}
         .stApp {{ background-color: var(--bg); color: var(--text); }}
         section[data-testid="stSidebar"] > div {{
@@ -83,7 +81,7 @@ def apply_theme(dark: bool):
             background: var(--accent); color: white; border: none; border-radius: 10px;
         }}
         .stButton > button:hover, .stDownloadButton > button:hover {{
-            background: {ORANGE_HOVER}; color: white;
+            background: var(--accent-hover); color: white;
         }}
         .stSlider [data-baseweb="slider"] > div > div > div {{ background: rgba(255,122,0,0.2); }}
         .stSlider [data-baseweb="slider"] > div > div > div > div {{ background: var(--accent); }}
@@ -286,7 +284,7 @@ def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, b
     style = f"border:{border_px}px solid {border_color};border-radius:8px;display:block;max-width:100%;width:{width_px}px;"
     return f'<img src="data:image/png;base64,{data}" style="{style}" />'
 
-# ===== PRÉ-VISUALIZAÇÃO com thumbs + checkbox + BORDA VERMELHA nas excluídas =====
+# ===== PRÉ-VISUALIZAÇÃO persistente =====
 def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
@@ -338,7 +336,7 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
                 batch = imgs[i:i+max_per_slide]
                 cols = st.columns(len(batch))
                 for col, (url, (_loja, buf, (w_px, h_px))) in zip(cols, batch):
-                    # miniatura com borda
+                    # miniatura com borda (vermelha se excluída)
                     try:
                         buf.seek(0)
                         im = Image.open(buf)
@@ -389,7 +387,14 @@ def main_app():
         st.markdown("---")
         st.caption("Aparência do slide")
         bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF", key="bg_hex")
-        logo_file = st.file_uploader("Logo (PNG/JPG) — canto superior direito", type=["png","jpg","jpeg"])
+
+        # Uploader do logo + persistência dos bytes
+        logo_file = st.file_uploader("Logo (PNG/JPG) — canto superior direito", type=["png","jpg","jpeg"], key="logo_uploader")
+        if "logo_bytes" not in st.session_state:
+            st.session_state.logo_bytes = None
+        if logo_file is not None:
+            st.session_state.logo_bytes = logo_file.getvalue()
+
         logo_width_in = st.slider("Largura do logo (em polegadas)", 0.5, 3.0, 1.2, 0.1, key="logo_width_in")
 
         st.markdown("---")
@@ -428,7 +433,7 @@ def main_app():
     if "preview_mode" not in st.session_state:
         st.session_state.preview_mode = False
 
-    # ===== Processar planilha (preenche pipeline) =====
+    # ===== Processar planilha para PRÉVIA (preenche pipeline) =====
     if btn_preview:
         if not up:
             st.warning("Envie a planilha primeiro.")
@@ -447,6 +452,7 @@ def main_app():
                 st.error(f"Colunas não encontradas: {missing}")
                 return
 
+            # lista (loja, url) sem duplicados (preserva ordem)
             items = []
             for _, row in df.iterrows():
                 loja = str(row[loja_col]).strip()
@@ -501,64 +507,7 @@ def main_app():
 
             status.write(f"Concluído. Falhas: {falhas}")
 
-            # guarda bytes da logo
-            logo_bytes = None
-            if logo_file := st.session_state.get("logo_file_obj"):
-                pass  # não usamos; mantido por compat
-            else:
-                # pega do uploader atual
-                uploaded_logo = st.session_state.get("logo_bytes")
-                if uploaded_logo is None and st.session_state.get("logo_width_in") is not None:
-                    # se o usuário enviou logo nesta execução
-                    pass
-            # Melhor abordagem: se logo_file existir nesta execução, capture bytes já:
-            if st.session_state.get("xlsx_upload") and st.session_state.get("logo_width_in") is not None:
-                if st.session_state.get("logo_bytes") is None and 'logo_uploader_seen' not in st.session_state:
-                    pass
-            # Captura logo bytes do uploader atual
-            if st.session_state.get("logo_bytes") is None and st.session_state.get("logo_width_in") is not None:
-                # reabra o uploader para pegar bytes se existir
-                if st.session_state.get("logo_file_cache") is not None:
-                    logo_bytes = st.session_state["logo_file_cache"]
-
-            # Simples: leia do logo_file diretamente agora e grave no pipeline
-            if (lf := st.session_state.get("logo_file_obj")):
-                logo_bytes = lf
-            else:
-                # pega do uploader da sidebar (logo_file)
-                if "sidebar_logo_seen" not in st.session_state:
-                    st.session_state["sidebar_logo_seen"] = True
-                if st.session_state.get("sidebar_logo_bytes") is None and st.session_state.get("logo_width_in") is not None:
-                    pass
-            # Na prática, o mais robusto: se o usuário mandou um logo agora, leia-o e guarde
-            if (logo := st.session_state.get("logo_uploader_latest")):
-                logo_bytes = logo
-
-            # captura logo da variável local logo_file (do uploader vivo)
-            if 'logo_bytes' not in st.session_state:
-                st.session_state.logo_bytes = None
-            if (logo_file := st.session_state.get("logo_file_widget")):
-                st.session_state.logo_bytes = logo_file
-
-            # Se o uploader retornou arquivo nesta execução (variável logo_file na sidebar), salve bytes:
-            if 'logo_bytes' in st.session_state and st.session_state.logo_bytes is None and locals().get('logo_file'):
-                try:
-                    st.session_state.logo_bytes = logo_file.read()
-                except Exception:
-                    pass
-
-            # alternativa simples: se veio logo_file neste run:
-            if logo_file is not None:
-                try:
-                    logo_bytes = logo_file.read()
-                except Exception:
-                    logo_bytes = None
-            else:
-                # mantém o que já estava salvo no pipeline anterior, se houver
-                if st.session_state.pipeline.get("settings", {}).get("logo_bytes"):
-                    logo_bytes = st.session_state.pipeline["settings"]["logo_bytes"]
-
-            # grava pipeline
+            # grava pipeline (usa SEMPRE st.session_state.logo_bytes)
             st.session_state.pipeline = {
                 "items": items,
                 "resultados": resultados,
@@ -567,12 +516,12 @@ def main_app():
                     "max_per_slide": st.session_state["max_per_slide"],
                     "sort_mode": st.session_state["sort_mode"],
                     "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
-                    "logo_bytes": logo_bytes,
+                    "logo_bytes": st.session_state.logo_bytes,
                     "logo_width_in": st.session_state["logo_width_in"],
                     "thumb_px": st.session_state["thumb_px"],
                 }
             }
-            st.session_state.preview_mode = True  # <<< mantém prévia ativa após reruns
+            st.session_state.preview_mode = True  # mantém a prévia ativa após qualquer rerun
 
     # ===== Render da PRÉVIA (persistente enquanto preview_mode=True) =====
     if st.session_state.preview_mode and st.session_state.pipeline:
@@ -618,4 +567,3 @@ else:
         if st.button("Sair", type="secondary"):
             st.session_state.clear(); st.rerun()
     main_app()
-
