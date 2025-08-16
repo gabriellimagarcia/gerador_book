@@ -171,16 +171,27 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
 
 def px_to_inches(px): return Inches(px / 96.0)
 
+# --- helpers de aparência ---
+def hex_to_rgb(hex_str: str):
+    s = hex_str.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join([c*2 for c in s])
+    r = int(s[0:2], 16); g = int(s[2:4], 16); b = int(s[4:6], 16)
+    return r, g, b
+
+def pick_contrast_color(r, g, b):
+    # luminância perceptiva: 0..255; threshold ~128
+    brightness = (r*299 + g*587 + b*114) / 1000
+    return (0,0,0) if brightness > 128 else (255,255,255)
+
 # --- slots de layout (1, 2 ou 3 por slide) ---
 def get_slots(n, prs):
     """Retorna [(left, top, max_w, max_h)] para n imagens no slide."""
     IMG_TOP = Inches(1.2)
-    CONTENT_W = Inches(11)    # largura útil
+    CONTENT_W = Inches(11)
     CONTENT_H = Inches(6)
     GAP = Inches(0.2)
-
     start_left = (prs.slide_width - CONTENT_W) / 2
-
     if n == 1:
         return [(start_left, IMG_TOP, CONTENT_W, CONTENT_H)]
     else:
@@ -193,13 +204,20 @@ def get_slots(n, prs):
             slots.append((left, IMG_TOP, cell_w, CONTENT_H))
         return slots
 
-def add_title(slide, text):
+def add_title(slide, text, title_rgb=(0,0,0)):
     TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H = Inches(0.5), Inches(0.2), Inches(12), Inches(1)
     tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H)
     tf = tx.text_frame; tf.clear()
     p = tf.paragraphs[0]; run = p.add_run(); run.text = text
-    font = run.font; font.name='Arial'; font.size=Pt(15); font.bold=True; font.color.rgb=RGBColor(0,0,0)
+    font = run.font; font.name='Arial'; font.size=Pt(15); font.bold=True
+    font.color.rgb = RGBColor(*title_rgb)
     p.alignment = 1
+
+def set_slide_bg(slide, rgb_tuple):
+    bg = slide.background
+    fill = bg.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor(*rgb_tuple)
 
 def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
     img_w_in = px_to_inches(w_px)
@@ -212,31 +230,34 @@ def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
     buf.seek(0)
     slide.shapes.add_picture(buf, x, y, width=final_w, height=final_h)
 
-def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode):
+def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb):
     prs = Presentation()
     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
     blank = prs.slide_layouts[6]
 
-    # --- agrupa por loja mantendo ordem original ---
+    # agrupa por loja mantendo ordem original
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados:
             groups.setdefault(str(loja), []).append(resultados[url])  # (loja, buf, (w,h))
 
-    # --- ordenação das lojas ---
+    # ordenação das lojas
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
     else:
-        loja_keys = list(groups.keys())  # ordem original do Excel
+        loja_keys = list(groups.keys())
 
-    # --- gera os slides por loja em lotes de 'max_per_slide' ---
+    # cor do título com auto-contraste ao fundo
+    title_rgb = pick_contrast_color(*bg_rgb)
+
+    # gera slides
     for loja in loja_keys:
         imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
             batch = imgs[i:i+max_per_slide]
             slide = prs.slides.add_slide(blank)
-            add_title(slide, loja)
-
+            set_slide_bg(slide, bg_rgb)
+            add_title(slide, loja, title_rgb)
             slots = get_slots(len(batch), prs)
             for (_loja, buf, (w_px, h_px)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
@@ -265,6 +286,10 @@ def main_app():
             ["Ordem original do Excel", "Nome da loja (A→Z)"],
             index=0
         )
+
+        st.markdown("---")
+        st.caption("Aparência do slide")
+        bg_hex = st.color_picker("Cor de fundo do slide", value="#FFFFFF")
 
         st.markdown("---")
         st.caption("Tamanho e compressão")
@@ -334,7 +359,8 @@ def main_app():
 
         status.write(f"Concluído. Falhas: {falhas}")
         titulo = "Apresentacao_Relatorio_Compacta"
-        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode)
+        bg_rgb = hex_to_rgb(bg_hex)
+        ppt_bytes = gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb)
         st.success("PPT gerado com sucesso!")
         st.download_button("⬇️ Baixar PPT", data=ppt_bytes, file_name=f"{titulo}.pptx",
                            mime="application/vnd.openxmlformats-officedocument.presentationml.presentation")
