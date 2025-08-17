@@ -332,66 +332,109 @@ def render_summary(items, resultados, excluded):
         unsafe_allow_html=True
     )
 
+# ========= PRÉ-VISUALIZAÇÃO COM EXPANDERS =========
 def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, thumbs_per_row: int):
-    """Pré-visualização: miniaturas lado a lado (grades), independente de max_per_slide."""
+    """
+    Pré-visualização: miniaturas em grade, com expandir/recolher por loja.
+    Mantém seleção em st.session_state.excluded_urls e estado dos grupos em st.session_state.expanded_groups.
+    """
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
-    excluded = st.session_state.excluded_urls
+    if "expanded_groups" not in st.session_state:
+        st.session_state.expanded_groups = {}
 
-    # agrupa por loja
+    excluded = st.session_state.excluded_urls
+    expanded_groups = st.session_state.expanded_groups
+
+    # Agrupa por loja
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados:
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
-    # ordenação
-    loja_keys = (sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
-                 if sort_mode == "Nome da loja (A→Z)" else list(groups.keys()))
+    # Ordenação de lojas
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+    else:
+        loja_keys = list(groups.keys())
 
-    # toolbar da prévia
-    c1, c2, c3 = st.columns([1,1,1])
+    # Toolbar topo
+    c1, c2, c3, c4 = st.columns([1,1,1,1])
     with c1:
         if st.button("🧹 Limpar todas as exclusões", type="secondary", use_container_width=True):
-            excluded.clear(); st.toast("Exclusões limpas", icon="🧽"); st.rerun()
+            excluded.clear()
+            st.toast("Exclusões limpas", icon="🧽")
+            st.rerun()
     with c2:
-        if st.button("📌 Manter apenas selecionadas (inverter seleção)", type="secondary", use_container_width=True):
+        if st.button("🔁 Inverter seleção", type="secondary", use_container_width=True):
             all_urls = {url for _, v in groups.items() for (url, _) in v}
             st.session_state.excluded_urls = all_urls - excluded
-            st.toast("Seleção invertida", icon="🔁"); st.rerun()
+            st.toast("Seleção invertida", icon="🔁")
+            st.rerun()
     with c3:
-        st.caption(f"Excluídas até agora: **{len(excluded)}**")
+        if st.button("➕ Expandir todas", type="secondary", use_container_width=True):
+            for loja in loja_keys:
+                expanded_groups[loja] = True
+            st.rerun()
+    with c4:
+        if st.button("➖ Recolher todas", type="secondary", use_container_width=True):
+            for loja in loja_keys:
+                expanded_groups[loja] = False
+            st.rerun()
 
-    # render por loja em grade (thumbs_per_row colunas fixas)
+    st.caption(f"Excluídas até agora: **{len(excluded)}**")
+
+    # Render por loja (expander)
     for loja in loja_keys:
         imgs = groups[loja]
-        st.markdown(f'<div class="group-head"><strong>{loja}</strong><span class="small">{len(imgs)} foto(s)</span></div>', unsafe_allow_html=True)
+        expanded_default = expanded_groups.get(loja, True)  # default expandido
+        with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=expanded_default):
+            # Controles rápidos por loja
+            lc1, lc2, lc3 = st.columns([1,1,1])
+            with lc1:
+                if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}", use_container_width=True):
+                    for url, _ in imgs:
+                        excluded.add(url)
+                    st.rerun()
+            with lc2:
+                if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}", use_container_width=True):
+                    for url, _ in imgs:
+                        excluded.discard(url)
+                    st.rerun()
+            with lc3:
+                new_state = st.toggle("Manter este grupo expandido", value=expanded_default, key=f"exp_keep_{hash(loja)}",
+                                      help="Salva a preferência para esta loja.")
+                expanded_groups[loja] = bool(new_state)
 
-        cols = st.columns(thumbs_per_row)
-        col_idx = 0
-        for (url, (_loja, buf, (w_px, h_px))) in imgs:
-            with cols[col_idx]:
-                try:
-                    buf.seek(0); im = Image.open(buf)
-                except Exception:
-                    st.warning("Não foi possível pré-visualizar esta imagem."); 
-                    col_idx = (col_idx + 1) % thumbs_per_row
-                    continue
+            # Grid de miniaturas (thumbs_per_row colunas)
+            cols = st.columns(thumbs_per_row)
+            col_idx = 0
+            for (url, (_loja, buf, (w_px, h_px))) in imgs:
+                with cols[col_idx]:
+                    try:
+                        buf.seek(0)
+                        im = Image.open(buf)
+                    except Exception:
+                        st.warning("Não foi possível pré-visualizar esta imagem.")
+                        col_idx = (col_idx + 1) % thumbs_per_row
+                        continue
 
-                is_excluded = url in excluded
-                border_px = 3 if is_excluded else 1
-                border_color = "#E53935" if is_excluded else "#DDDDDD"
+                    is_excluded = url in excluded
+                    border_px = 3 if is_excluded else 1
+                    border_color = "#E53935" if is_excluded else "#DDDDDD"
 
-                st.markdown('<div class="img-card">', unsafe_allow_html=True)
-                st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color), unsafe_allow_html=True)
+                    st.markdown('<div class="img-card">', unsafe_allow_html=True)
+                    st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color), unsafe_allow_html=True)
 
-                key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
-                default = is_excluded
-                checked = st.checkbox("Excluir esta foto", key=key, value=default)
-                if checked: excluded.add(url)
-                else: excluded.discard(url)
-                st.markdown('</div>', unsafe_allow_html=True)
+                    key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
+                    checked = st.checkbox("Excluir esta foto", key=key, value=is_excluded)
+                    if checked:
+                        excluded.add(url)
+                    else:
+                        excluded.discard(url)
+                    st.markdown('</div>', unsafe_allow_html=True)
 
-            col_idx = (col_idx + 1) % thumbs_per_row
+                col_idx = (col_idx + 1) % thumbs_per_row
 
         st.divider()
 
@@ -468,16 +511,17 @@ def main_app():
             st.session_state.clear(); st.rerun()
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # Estados
+    # ===== Estados
     if "pipeline" not in st.session_state: st.session_state.pipeline = {}
     if "excluded_urls" not in st.session_state: st.session_state.excluded_urls = set()
     if "preview_mode" not in st.session_state: st.session_state.preview_mode = False
+    if "expanded_groups" not in st.session_state: st.session_state.expanded_groups = {}
 
-    # Etapas e Upload
+    # ===== Etapas e Upload
     render_steps(1 if not st.session_state.preview_mode else 2)
     up = st.file_uploader("1) Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload")
 
-    # Barra fixa de ações
+    # ===== Barra fixa de ações
     st.markdown("""
     <div class="action-bar"><div class="action-inner">
       <div id="btns"></div>
@@ -489,7 +533,7 @@ def main_app():
     with bcol3:
         btn_generate = st.button("⬇️ Gerar PPT", key="btn_generate", use_container_width=True)
 
-    # Processar planilha para PRÉVIA
+    # ===== Processar planilha para PRÉVIA
     if btn_preview:
         if not up:
             st.warning("Envie a planilha primeiro.")
@@ -497,11 +541,11 @@ def main_app():
             try:
                 df = pd.read_excel(up)
             except Exception as e:
-                st.error(f"Não consegui ler o Excel: {e}"); return
+                st.error(f"Não consegui ler o Excel: {e}"); st.stop()
 
             loja_col = st.session_state["loja_col"]; img_col  = st.session_state["img_col"]
             missing = [c for c in [img_col, loja_col] if c not in df.columns]
-            if missing: st.error(f"Colunas não encontradas: {missing}"); return
+            if missing: st.error(f"Colunas não encontradas: {missing}"); st.stop()
 
             items = []
             for _, row in df.iterrows():
@@ -521,7 +565,7 @@ def main_app():
                 items = [(loja, u) for loja in sorted(grouped_tmp.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold())) for u in grouped_tmp[loja]]
 
             total = len(items)
-            if total == 0: st.warning("Nenhuma URL de imagem encontrada."); return
+            if total == 0: st.warning("Nenhuma URL de imagem encontrada."); st.stop()
 
             st.info(f"Baixando e processando **{total}** imagem(ns)...")
             session = requests.Session()
@@ -571,21 +615,33 @@ def main_app():
             }
             st.session_state.preview_mode = True
 
-    # PRÉVIA
+    # ===== PRÉVIA
     if st.session_state.preview_mode and st.session_state.pipeline:
         render_steps(2)
         p = st.session_state.pipeline
-        render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
+        # Resumo
+        total_urls = len(p["items"])
+        baixadas = sum(1 for _, url in p["items"] if url in p["resultados"])
+        lojas = len({loja for loja, _ in p["items"]})
+        st.markdown(
+            f"**Resumo:** "
+            f"<span class='badge'>Lojas: {lojas}</span> "
+            f"<span class='badge'>Links: {total_urls}</span> "
+            f"<span class='badge'>Baixadas: {baixadas}</span> "
+            f"<span class='badge'>Excluídas: {len(st.session_state.excluded_urls)}</span>",
+            unsafe_allow_html=True
+        )
+        # Render com expanders
         render_preview(
             p["items"], p["resultados"],
             p["settings"]["max_per_slide"],
             p["settings"]["sort_mode"],
             p["settings"]["thumb_px"],
-            p["settings"]["thumbs_per_row"]  # <<<<< miniaturas lado a lado
+            p["settings"]["thumbs_per_row"]
         )
         st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT. Depois clique em **Gerar PPT** na barra inferior.")
 
-    # GERAR
+    # ===== GERAR
     if btn_generate:
         if not st.session_state.pipeline:
             st.warning("Clique em **Pré-visualizar** antes de gerar.")
