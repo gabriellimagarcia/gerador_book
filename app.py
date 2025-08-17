@@ -17,79 +17,57 @@ from pptx.dml.color import RGBColor
 st.set_page_config(page_title="Gerador de Book", page_icon="📸", layout="wide")
 
 # ===============================
-# UX: estilo geral e barra fixa
+# UX: estilo geral e topo/etapas
 # ===============================
 BASE_CSS = """
 <style>
-/* barra de etapas */
-.steps {display:flex; gap:8px; align-items:center; margin: 1rem 0 0.5rem;}
-.step {padding:8px 12px; border-radius:999px; border:1px solid #E5E7EB; color:#111; background:#fff; font-weight:600;}
+/* barra de etapas visual (pílulas) */
+.steps {display:flex; gap:8px; align-items:center; margin: 0.25rem 0 0.5rem;}
+.step {padding:6px 10px; border-radius:999px; border:1px solid #E5E7EB; color:#111; background:#fff; font-weight:700; font-size:13px;}
 .step.active {background:#FF7A00; color:#fff; border-color:#FF7A00;}
-.step.sep {opacity:0.4}
+.step.sep {opacity:0.5}
 
-/* barra fixa de ações no rodapé */
-.action-bar {
-  position: fixed; left: 0; right: 0; bottom: 0;
-  background: rgba(255,255,255,0.92);
-  border-top: 1px solid #eee; backdrop-filter: blur(6px);
-  padding: 10px 16px; z-index: 999;
-}
-.dark .action-bar { background: rgba(14,17,23,0.9); border-top-color:#222; }
-
-.action-inner { max-width: 1200px; margin: 0 auto; display:flex; gap:12px; align-items:center; justify-content:flex-end; }
-
-/* cards da pré-visualização */
-.img-card {
-  border:1px solid #DDD; border-radius:10px; padding:10px; transition: all .15s ease;
-  background:#fff; display:flex; flex-direction:column; gap:8px; height:100%;
-}
+/* cards / miniaturas */
+.img-card { border:1px solid #DDD; border-radius:10px; padding:10px; transition: all .15s ease;
+  background:#fff; display:flex; flex-direction:column; gap:8px; height:100%; }
 .dark .img-card { background:#0f131a; border-color:#232a36; }
 .img-card:hover { box-shadow: 0 8px 20px rgba(0,0,0,0.06); transform: translateY(-2px); }
 
-/* badge com números */
-.badge {
-  display:inline-block; padding:3px 8px; border-radius:999px; background:#F3F4F6; color:#111; font-size:12px; font-weight:600;
-}
+/* badge numérica */
+.badge { display:inline-block; padding:3px 8px; border-radius:999px; background:#F3F4F6; color:#111; font-size:12px; font-weight:700; }
 .dark .badge { background:#1f2635; color:#eaeaea; }
-
-/* cabeçalho de grupo (loja) */
-.group-head {
-  display:flex; align-items:center; justify-content:space-between;
-  padding:8px 12px; border-radius:8px; background:#F8FAFC; border:1px solid #EEF2F7; margin: 10px 0 6px;
-}
-.dark .group-head { background:#10151f; border-color:#1b2130; }
 
 /* botão SAIR (vermelho) */
 .logout-zone .stButton > button {
-  background: #E53935 !important;
-  color: #fff !important;
-  border: none !important;
-  border-radius: 10px !important;
+  background: #E53935 !important; color: #fff !important;
+  border: none !important; border-radius: 10px !important;
 }
-.logout-zone .stButton > button:hover {
-  background: #C62828 !important;
-  color: #fff !important;
-}
+.logout-zone .stButton > button:hover { background: #C62828 !important; color: #fff !important; }
 
 /* botão RESET (laranja) */
 .reset-zone .stButton > button {
-  background: #FF9800 !important;
-  color: #fff !important;
-  border: none !important;
-  border-radius: 10px !important;
+  background: #FF9800 !important; color: #fff !important;
+  border: none !important; border-radius: 10px !important;
 }
-.reset-zone .stButton > button:hover {
-  background: #F57C00 !important;
-  color: #fff !important;
+.reset-zone .stButton > button:hover { background: #F57C00 !important; color: #fff !important; }
+
+/* botão de download grande */
+.stDownloadButton > button {
+  padding: 18px 26px !important;
+  font-size: 18px !important;
+  font-weight: 800 !important;
+  border-radius: 12px !important;
 }
 
-/* marcar corpo como dark/light para CSS global */
-body:has(.stApp[data-theme="dark"]) .action-bar { background: rgba(14,17,23,0.9); border-top-color:#222; }
+/* marcar corpo dark/light p/ variações */
+body:has(.stApp[data-theme="dark"]) .steps .step { border-color:#1f2635; background:#0e1117; color:#eaeaea; }
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
-# ===== Tema (claro predominante, acento laranja) =====
+# ===============================
+# Tema (claro predominante, acento laranja)
+# ===============================
 def apply_theme(dark: bool):
     ORANGE = "#FF7A00"; ORANGE_HOVER = "#E66E00"; BLACK = "#111111"; GRAY_BG = "#f6f6f7"
     if dark:
@@ -123,6 +101,7 @@ def apply_theme(dark: bool):
         </style>
         """
     st.markdown(palette, unsafe_allow_html=True)
+    # marca o root com data-theme para CSS condicional
     st.write(f"""<script>
       const root = window.parent.document.querySelector('.stApp');
       if (root) root.setAttribute('data-theme', '{'dark' if dark else 'light'}');
@@ -131,7 +110,9 @@ def apply_theme(dark: bool):
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
-# ===== Login =====
+# ===============================
+# Login (whitelist simples)
+# ===============================
 ALLOWED_USERS = {
     "lucas.costa@mkthouse.com.br": "mudar12345",
     "gabriel.garcia@mkthouse.com.br": "Peter2025!",
@@ -167,8 +148,11 @@ def do_login():
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
-# ===== Utils =====
+# ===============================
+# Utils
+# ===============================
 URL_RE = re.compile(r'https?://\S+')
+
 def extrair_links(celula):
     if pd.isna(celula): return []
     t = str(celula).replace(",", " ").replace("(", " ").replace(")", " ").replace('"', " ").replace("'", " ")
@@ -228,17 +212,24 @@ def get_slots(n, prs):
     cell_w = (CONTENT_W - total_gap) / cols
     return [(start_left + c*(cell_w+GAP), IMG_TOP, cell_w, CONTENT_H) for c in range(cols)]
 
-def add_title(slide, text, title_rgb=(0,0,0), font_name="Radikal", font_size_pt=18, font_bold=True):
-    TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H = Inches(0.5), Inches(0.2), Inches(12), Inches(1)
-    tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, TITLE_H)
+def add_title_and_address(slide, title_text, address_text, title_rgb=(0,0,0),
+                          font_name="Radikal", title_font_size_pt=18, title_font_bold=True):
+    # Título
+    TITLE_LEFT, TITLE_TOP, TITLE_W = Inches(0.5), Inches(0.2), Inches(12)
+    tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, Inches(1))
     tf = tx.text_frame; tf.clear()
-    p = tf.paragraphs[0]; run = p.add_run(); run.text = text
-    font = run.font
-    font.name = font_name or "Radikal"
-    font.size = Pt(font_size_pt or 18)
-    font.bold = bool(font_bold)
-    font.color.rgb = RGBColor(*title_rgb)
-    p.alignment = 1
+    p = tf.paragraphs[0]; run = p.add_run(); run.text = title_text
+    f = run.font; f.name = font_name or "Radikal"; f.size = Pt(title_font_size_pt or 18)
+    f.bold = bool(title_font_bold); f.color.rgb = RGBColor(*title_rgb)
+    p.alignment = 1  # centro
+
+    # Endereço (meia fonte, mesma família e cor), logo abaixo
+    if address_text:
+        p2 = tf.add_paragraph()
+        run2 = p2.add_run(); run2.text = address_text
+        f2 = run2.font; f2.name = font_name or "Radikal"; f2.size = Pt(max(8, (title_font_size_pt or 18) / 2))
+        f2.bold = False; f2.color.rgb = RGBColor(*title_rgb)
+        p2.alignment = 1
 
 def set_slide_bg(slide, rgb_tuple):
     fill = slide.background.fill
@@ -276,15 +267,21 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
               signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
               title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
               excluded_urls=None):
+    """
+    items: lista de (loja, endereco, url)
+    resultados[url] = (loja, endereco, buf, (w,h))
+    """
     excluded_urls = excluded_urls or set()
     prs = Presentation(); prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
     blank = prs.slide_layouts[6]
 
+    # agrupar por loja preservando ordem
     groups = OrderedDict()
-    for loja, url in items:
+    for loja, endereco, url in items:
         if url in resultados and url not in excluded_urls:
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
+    # ordenação
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
     else:
@@ -299,7 +296,11 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
             batch = imgs[i:i+max_per_slide]
             slide = prs.slides.add_slide(blank)
             set_slide_bg(slide, bg_rgb)
-            add_title(slide, loja, title_rgb, title_font_name, title_font_size_pt, title_font_bold)
+
+            # endereço: pega do 1º item do batch
+            first_url, (_loja, endereco, _buf0, _wh0) = batch[0]
+            add_title_and_address(slide, loja, endereco, title_rgb,
+                                  title_font_name, title_font_size_pt, title_font_bold)
 
             if logo_bytes: add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
             if signature_bytes:
@@ -308,7 +309,7 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
                                            right_margin_in=signature_right_margin_in)
 
             slots = get_slots(len(batch), prs)
-            for (url, (_loja, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+            for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
@@ -333,8 +334,8 @@ def render_steps(current: int):
 
 def render_summary(items, resultados, excluded):
     total_urls = len(items)
-    baixadas = sum(1 for _, url in items if url in resultados)
-    lojas = len({loja for loja, _ in items})
+    baixadas = sum(1 for _, _, url in items if url in resultados)
+    lojas = len({loja for loja, _, _ in items})
     st.markdown(
         f"**Resumo:** "
         f"<span class='badge'>Lojas: {lojas}</span> "
@@ -345,7 +346,7 @@ def render_summary(items, resultados, excluded):
     )
 
 # ========= PRÉ-VISUALIZAÇÃO COM EXPANDERS =========
-def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, thumbs_per_row: int):
+def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: int):
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
     if "expanded_groups" not in st.session_state:
@@ -354,16 +355,19 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, t
     excluded = st.session_state.excluded_urls
     expanded_groups = st.session_state.expanded_groups
 
+    # Agrupar por loja
     groups = OrderedDict()
-    for loja, url in items:
+    for loja, endereco, url in items:
         if url in resultados:
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
+    # Ordenação de lojas
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
     else:
         loja_keys = list(groups.keys())
 
+    # Toolbar topo
     c1, c2, c3, c4 = st.columns([1,1,1,1])
     with c1:
         if st.button("🧹 Limpar todas as exclusões", type="secondary", use_container_width=True):
@@ -384,6 +388,7 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, t
 
     st.caption(f"Excluídas até agora: **{len(excluded)}**")
 
+    # Render por loja (expander)
     for loja in loja_keys:
         imgs = groups[loja]
         expanded_default = expanded_groups.get(loja, True)
@@ -398,12 +403,13 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, t
                     for url, _ in imgs: excluded.discard(url)
                     st.rerun()
             with lc3:
-                new_state = st.toggle("Manter este grupo expandido", value=expanded_default, key=f"exp_keep_{hash(loja)}", help="Salva a preferência para esta loja.")
+                new_state = st.toggle("Manter este grupo expandido", value=expanded_default, key=f"exp_keep_{hash(loja)}",
+                                      help="Salva a preferência para esta loja.")
                 expanded_groups[loja] = bool(new_state)
 
             cols = st.columns(thumbs_per_row)
             col_idx = 0
-            for (url, (_loja, buf, (w_px, h_px))) in imgs:
+            for (url, (_loja, _end, buf, (w_px, h_px))) in imgs:
                 with cols[col_idx]:
                     try:
                         buf.seek(0); im = Image.open(buf)
@@ -437,19 +443,15 @@ def reset_app(preserve_login: bool = True):
     Se preserve_login=True, mantém usuário logado; caso False, também desloga."""
     user = st.session_state.get("user_email")
     auth = st.session_state.get("auth", False)
-
-    st.session_state.clear()  # limpa tudo
-
+    st.session_state.clear()
     if preserve_login and auth:
-        # Reativa login e configura defaults mínimos (sem logo/assinatura ou qualquer cache)
         st.session_state.auth = True
         st.session_state.user_email = user
         st.session_state.dark_mode = False
-        # (Não repõe logo_bytes nem signature_bytes → ficam None)
     st.rerun()
 
 # ===============================
-# App principal (UX melhorado)
+# App principal
 # ===============================
 def main_app():
     with st.sidebar:
@@ -461,8 +463,15 @@ def main_app():
             st.caption("Colunas da planilha (nomes exatos do cabeçalho):")
             loja_col = st.text_input("🛒 Coluna de LOJA", value="Selecione sua loja", key="loja_col")
             img_col  = st.text_input("🖼️ Coluna de FOTOS", value="Faça o upload das fotos", key="img_col")
+
+            # Endereço (opcional)
+            use_address = st.checkbox("➕ Incluir endereço abaixo do nome da loja", value=False, key="use_address")
+            address_col = st.text_input("🏠 Coluna de ENDEREÇO (quando ativado)", value="Endereço",
+                                        key="address_col", disabled=not use_address)
+
             st.caption("Layout dos slides")
             max_per_slide = st.selectbox("📐 Fotos por slide (máx.)", [1, 2, 3], index=0, key="max_per_slide")
+
             st.caption("Ordenação")
             sort_mode = st.selectbox("🔤 Ordenar lojas por",
                 ["Ordem original do Excel", "Nome da loja (A→Z)"], index=0, key="sort_mode")
@@ -510,174 +519,191 @@ def main_app():
             max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
             req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
-    # ===== Topo: título + botões RESET e SAIR à direita
+    # ===== Topo: título + etapas + botões RESET/SAIR
     top_l, top_m, top_r = st.columns([5,1,1])
     with top_l:
+        current_step = 1
+        if st.session_state.get("preview_mode") and not st.session_state.get("generated"):
+            current_step = 2
+        if st.session_state.get("generated"):
+            current_step = 3
         st.title("📸 Gerador de Book")
+        render_steps(current_step)
         st.caption("Monte um PPT com fotos por loja, com compressão e layout automático.")
     with top_m:
         st.markdown('<div class="reset-zone">', unsafe_allow_html=True)
         if st.button("Resetar", key="reset_btn", use_container_width=True, type="secondary"):
-            # reseta tudo (logos, assinatura, preview, configs…), mantém login
             reset_app(preserve_login=True)
         st.markdown('</div>', unsafe_allow_html=True)
     with top_r:
         st.markdown('<div class="logout-zone">', unsafe_allow_html=True)
         if st.button("Sair", key="logout_btn", use_container_width=True, type="secondary"):
-            # reseta tudo e desloga
             reset_app(preserve_login=False)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ===== Estados
+    # ===== Estados base
     if "pipeline" not in st.session_state: st.session_state.pipeline = {}
     if "excluded_urls" not in st.session_state: st.session_state.excluded_urls = set()
     if "preview_mode" not in st.session_state: st.session_state.preview_mode = False
     if "expanded_groups" not in st.session_state: st.session_state.expanded_groups = {}
+    if "output_filename" not in st.session_state: st.session_state.output_filename = "Apresentacao_Relatorio_Compacta"
+    if "generated" not in st.session_state: st.session_state.generated = False
 
-    # ===== Etapas e Upload
-    render_steps(1 if not st.session_state.preview_mode else 2)
-    up = st.file_uploader("1) Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload")
-
-    # ===== Barra fixa de ações
-    st.markdown("""
-    <div class="action-bar"><div class="action-inner">
-      <div id="btns"></div>
-    </div></div>
-    """, unsafe_allow_html=True)
-    bcol1, bcol2, bcol3 = st.columns([6,1,1])
-    with bcol2:
+    # ===== 1) Upload =====
+    with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
+        up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload")
         btn_preview = st.button("🔎 Pré-visualizar", key="btn_preview", use_container_width=True)
-    with bcol3:
-        btn_generate = st.button("⬇️ Gerar PPT", key="btn_generate", use_container_width=True)
 
-    # ===== Processar planilha para PRÉVIA
-    if btn_preview:
-        if not up:
-            st.warning("Envie a planilha primeiro.")
-        else:
-            try:
-                df = pd.read_excel(up)
-            except Exception as e:
-                st.error(f"Não consegui ler o Excel: {e}"); st.stop()
+        if btn_preview:
+            if not up:
+                st.warning("Envie a planilha primeiro.")
+            else:
+                try:
+                    df = pd.read_excel(up)
+                except Exception as e:
+                    st.error(f"Não consegui ler o Excel: {e}"); st.stop()
 
-            loja_col = st.session_state["loja_col"]; img_col  = st.session_state["img_col"]
-            missing = [c for c in [img_col, loja_col] if c not in df.columns]
-            if missing: st.error(f"Colunas não encontradas: {missing}"); st.stop()
+                loja_col = st.session_state["loja_col"]
+                img_col  = st.session_state["img_col"]
+                use_address = st.session_state.get("use_address", False)
+                address_col = st.session_state.get("address_col", "Endereço")
 
-            items = []
-            for _, row in df.iterrows():
-                loja = str(row[loja_col]).strip()
-                for url in extrair_links(row.get(img_col, "")):
-                    if url.startswith("http"): items.append((loja, url))
-            seen, uniq = set(), []
-            for loja, url in items:
-                if url not in seen:
-                    seen.add(url); uniq.append((loja, url))
-            items = uniq
+                required_cols = [loja_col, img_col] + ([address_col] if use_address else [])
+                missing = [c for c in required_cols if c not in df.columns]
+                if missing: st.error(f"Colunas não encontradas: {missing}"); st.stop()
 
-            if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
-                grouped_tmp = OrderedDict()
-                for loja, url in items:
-                    grouped_tmp.setdefault(loja, []).append(url)
-                items = [(loja, u) for loja in sorted(grouped_tmp.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold())) for u in grouped_tmp[loja]]
+                # Monta items: (loja, endereco|"" , url)
+                items = []
+                for _, row in df.iterrows():
+                    loja = str(row[loja_col]).strip()
+                    endereco = str(row[address_col]).strip() if use_address else ""
+                    for url in extrair_links(row.get(img_col, "")):
+                        if url.startswith("http"):
+                            items.append((loja, endereco, url))
 
-            total = len(items)
-            if total == 0: st.warning("Nenhuma URL de imagem encontrada."); st.stop()
+                # Remove duplicados por URL
+                seen, uniq = set(), []
+                for loja, endereco, url in items:
+                    if url not in seen:
+                        seen.add(url); uniq.append((loja, endereco, url))
+                items = uniq
 
-            st.info(f"Baixando e processando **{total}** imagem(ns)...")
-            session = requests.Session()
-            adapter = requests.adapters.HTTPAdapter(pool_connections=st.session_state["max_workers"],
-                                                    pool_maxsize=st.session_state["max_workers"], max_retries=2)
-            session.mount("http://", adapter); session.mount("https://", adapter)
-            session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
+                # Ordenação por loja (se pedida) mantendo ordem das fotos
+                if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
+                    grouped_tmp = OrderedDict()
+                    for loja, end, url in items:
+                        grouped_tmp.setdefault(loja, []).append((end, url))
+                    items = [(loja, end, url)
+                             for loja in sorted(grouped_tmp.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
+                             for (end, url) in grouped_tmp[loja]]
 
-            prog = st.progress(0); status = st.empty()
-            resultados, falhas, done = {}, 0, 0
-            with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
-                futures = {ex.submit(
-                    baixar_processar, session, url,
-                    st.session_state["target_w"], st.session_state["target_h"],
-                    st.session_state["limite_kb"], st.session_state["req_timeout"]
-                ): (loja, url) for loja, url in items}
-                for fut in as_completed(futures):
-                    loja, url = futures[fut]
-                    ok_url, ok, buf, wh = fut.result()
-                    if ok: resultados[url] = (loja, buf, wh)
-                    else: falhas += 1
-                    done += 1; prog.progress(int(done * 100 / total))
-                    status.write(f"Processadas {done}/{total} imagens...")
+                total = len(items)
+                if total == 0: st.warning("Nenhuma URL de imagem encontrada."); st.stop()
 
-            status.write(f"Concluído. Falhas: {falhas}")
-            st.toast("Pré-visualização pronta ✅", icon="✅")
+                st.info(f"Baixando e processando **{total}** imagem(ns)...")
+                session = requests.Session()
+                adapter = requests.adapters.HTTPAdapter(pool_connections=st.session_state["max_workers"],
+                                                        pool_maxsize=st.session_state["max_workers"], max_retries=2)
+                session.mount("http://", adapter); session.mount("https://", adapter)
+                session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
 
-            st.session_state.pipeline = {
-                "items": items, "resultados": resultados, "falhas": falhas,
-                "settings": {
-                    "max_per_slide": st.session_state["max_per_slide"],
-                    "sort_mode": st.session_state["sort_mode"],
-                    "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
-                    "title_font_name": st.session_state["title_font_name"],
-                    "title_font_size_pt": st.session_state["title_font_size_pt"],
-                    "title_font_bold": st.session_state["title_font_bold"],
-                    "logo_bytes": st.session_state.logo_bytes,
-                    "logo_width_in": st.session_state["logo_width_in"],
-                    "signature_bytes": st.session_state.signature_bytes,
-                    "auto_half_signature": st.session_state.get("auto_half_signature", True),
-                    "signature_width_in": st.session_state.get("signature_width_in", (st.session_state["logo_width_in"]/2.0)),
-                    "signature_right_margin_in": st.session_state.get("sig_right_margin", 0.20),
-                    "signature_bottom_margin_in": st.session_state.get("sig_bottom_margin", 0.20),
-                    "thumb_px": st.session_state["thumb_px"],
-                    "thumbs_per_row": st.session_state["thumbs_per_row"],
+                prog = st.progress(0); status = st.empty()
+                resultados, falhas, done = {}, 0, 0
+                with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
+                    futures = {ex.submit(
+                        baixar_processar, session, url,
+                        st.session_state["target_w"], st.session_state["target_h"],
+                        st.session_state["limite_kb"], st.session_state["req_timeout"]
+                    ): (loja, endereco, url) for loja, endereco, url in items}
+                    for fut in as_completed(futures):
+                        loja, endereco, url = futures[fut]
+                        _url, ok, buf, wh = fut.result()
+                        if ok: resultados[url] = (loja, endereco, buf, wh)
+                        else: falhas += 1
+                        done += 1; prog.progress(int(done * 100 / total))
+                        status.write(f"Processadas {done}/{total} imagens...")
+
+                status.write(f"Concluído. Falhas: {falhas}")
+                st.toast("Pré-visualização pronta ✅", icon="✅")
+
+                # Guarda pipeline
+                st.session_state.pipeline = {
+                    "items": items, "resultados": resultados, "falhas": falhas,
+                    "settings": {
+                        "max_per_slide": st.session_state["max_per_slide"],
+                        "sort_mode": st.session_state["sort_mode"],
+                        "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
+                        "title_font_name": st.session_state["title_font_name"],
+                        "title_font_size_pt": st.session_state["title_font_size_pt"],
+                        "title_font_bold": st.session_state["title_font_bold"],
+                        "logo_bytes": st.session_state.logo_bytes,
+                        "logo_width_in": st.session_state["logo_width_in"],
+                        "signature_bytes": st.session_state.signature_bytes,
+                        "auto_half_signature": st.session_state.get("auto_half_signature", True),
+                        "signature_width_in": st.session_state.get("signature_width_in", (st.session_state["logo_width_in"]/2.0)),
+                        "signature_right_margin_in": st.session_state.get("sig_right_margin", 0.20),
+                        "signature_bottom_margin_in": st.session_state.get("sig_bottom_margin", 0.20),
+                        "thumb_px": st.session_state["thumb_px"],
+                        "thumbs_per_row": st.session_state["thumbs_per_row"],
+                    }
                 }
-            }
-            st.session_state.preview_mode = True
+                st.session_state.preview_mode = True
+                st.session_state.generated = False
+                st.rerun()
 
-    # ===== PRÉVIA
-    if st.session_state.preview_mode and st.session_state.pipeline:
-        render_steps(2)
-        p = st.session_state.pipeline
-        render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
-        render_preview(
-            p["items"], p["resultados"],
-            p["settings"]["max_per_slide"],
-            p["settings"]["sort_mode"],
-            p["settings"]["thumb_px"],
-            p["settings"]["thumbs_per_row"]
-        )
-        st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT. Depois clique em **Gerar PPT** na barra inferior.")
-
-    # ===== GERAR
-    if btn_generate:
-        if not st.session_state.pipeline:
-            st.warning("Clique em **Pré-visualizar** antes de gerar.")
-        else:
-            render_steps(3)
+    # ===== 2) Pré-visualização =====
+    with st.expander("2. Pré-visualização", expanded=st.session_state.preview_mode):
+        if st.session_state.preview_mode and st.session_state.pipeline:
             p = st.session_state.pipeline
-            items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
+            render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
+            render_preview(
+                p["items"], p["resultados"],
+                p["settings"]["sort_mode"],
+                p["settings"]["thumb_px"],
+                p["settings"]["thumbs_per_row"]
+            )
+            st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT, depois use a etapa 3.")
 
-            titulo = "Apresentacao_Relatorio_Compacta"
-            ppt_bytes = gerar_ppt(
-                items, resultados, titulo,
-                cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
-                cfg["logo_bytes"], cfg["logo_width_in"],
-                cfg["signature_bytes"], cfg["signature_width_in"],
-                cfg["auto_half_signature"],
-                cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
-                cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
-                excluded_urls=st.session_state.excluded_urls
+    # ===== 3) Gerar PPT =====
+    with st.expander("3. Gerar PPT", expanded=st.session_state.preview_mode):
+        cfn1, cfn2 = st.columns([2,1])
+        with cfn1:
+            st.session_state.output_filename = st.text_input(
+                "Nome do arquivo (sem .pptx)", value=st.session_state.output_filename, key="output_filename_input"
             )
-            st.success(f"PPT gerado! (excluídas {len(st.session_state.excluded_urls)} foto(s))")
-            st.download_button(
-                "⬇️ Baixar PPT",
-                data=ppt_bytes,
-                file_name=f"{titulo}.pptx",
-                mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                use_container_width=True
-            )
+        with cfn2:
+            btn_generate = st.button("⬇️ Gerar PPT", key="btn_generate", use_container_width=True)
+
+        if btn_generate:
+            if not st.session_state.pipeline:
+                st.warning("Faça a pré-visualização antes de gerar.")
+            else:
+                p = st.session_state.pipeline
+                items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
+                titulo = (st.session_state.output_filename or "Apresentacao_Relatorio_Compacta").strip()
+
+                ppt_bytes = gerar_ppt(
+                    items, resultados, titulo,
+                    cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
+                    cfg["logo_bytes"], cfg["logo_width_in"],
+                    cfg["signature_bytes"], cfg["signature_width_in"],
+                    cfg["auto_half_signature"],
+                    cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
+                    cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
+                    excluded_urls=st.session_state.excluded_urls
+                )
+                st.success(f"PPT gerado! (excluídas {len(st.session_state.excluded_urls)} foto(s))")
+                st.session_state.generated = True
+                st.download_button(
+                    "⬇️ Baixar apresentação",
+                    data=ppt_bytes,
+                    file_name=f"{titulo}.pptx",
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True
+                )
 
 # ===== Roteamento =====
 if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
