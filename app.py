@@ -560,8 +560,9 @@ def main_app():
     if "excluded_urls" not in st.session_state: st.session_state.excluded_urls = set()
     if "preview_mode" not in st.session_state: st.session_state.preview_mode = False
     if "expanded_groups" not in st.session_state: st.session_state.expanded_groups = {}
-    if "output_filename" not in st.session_state: st.session_state.output_filename = "Apresentacao_Relatorio_Compacta"
+    if "output_filename" not in st.session_state: st.session_state.output_filename = "Modelo_01"
     if "generated" not in st.session_state: st.session_state.generated = False
+    if "ppt_bytes" not in st.session_state: st.session_state.ppt_bytes = None
 
     # ===== 1) Upload =====
     with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
@@ -663,11 +664,12 @@ def main_app():
                 }
                 st.session_state.preview_mode = True
                 st.session_state.generated = False
+                st.session_state.ppt_bytes = None
                 st.rerun()
 
     # ===== 2) Pré-visualização =====
     with st.expander("2. Pré-visualização", expanded=st.session_state.preview_mode):
-        if st.session_state.preview_mode and st.session_state.pipeline:
+        if st.session_state.preview_mode && st.session_state.pipeline:
             p = st.session_state.pipeline
             render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
             render_preview(
@@ -678,23 +680,36 @@ def main_app():
             )
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT, depois use a etapa 3.")
 
-    # ===== 3) Gerar PPT =====
+    # ===== 3) Gerar PPT (ALINHADO) =====
     with st.expander("3. Gerar PPT", expanded=st.session_state.preview_mode):
-        cfn1, cfn2 = st.columns([2,1])
-        with cfn1:
+        col1, col2 = st.columns([3, 1])  # alinhamento lado a lado
+        with col1:
             st.session_state.output_filename = st.text_input(
-                "Nome do arquivo (sem .pptx)", value=st.session_state.output_filename, key="output_filename_input"
+                "Nome do arquivo (sem .pptx)",
+                value=st.session_state.output_filename,
+                key="output_filename_input"
             )
-        with cfn2:
-            btn_generate = st.button("⬇️ Gerar PPT", key="btn_generate", use_container_width=True)
 
-        if btn_generate:
+        with col2:
+            if st.session_state.ppt_bytes:
+                st.download_button(
+                    "⬇️ Baixar apresentação",
+                    data=st.session_state.ppt_bytes,
+                    file_name=f"{(st.session_state.output_filename or 'Apresentacao')}.pptx",
+                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+                    use_container_width=True
+                )
+            else:
+                btn_generate = st.button("⬇️ Gerar PPT", key="btn_generate", use_container_width=True)
+
+        # Geração quando clicar
+        if not st.session_state.ppt_bytes and 'btn_generate' in locals() and btn_generate:
             if not st.session_state.pipeline:
                 st.warning("Faça a pré-visualização antes de gerar.")
             else:
                 p = st.session_state.pipeline
                 items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
-                titulo = (st.session_state.output_filename or "Apresentacao_Relatorio_Compacta").strip()
+                titulo = (st.session_state.output_filename or "Apresentacao").strip()
 
                 ppt_bytes = gerar_ppt(
                     items, resultados, titulo,
@@ -706,15 +721,9 @@ def main_app():
                     cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
                     excluded_urls=st.session_state.excluded_urls
                 )
-                st.success(f"PPT gerado! (excluídas {len(st.session_state.excluded_urls)} foto(s))")
+                st.session_state.ppt_bytes = ppt_bytes
                 st.session_state.generated = True
-                st.download_button(
-                    "⬇️ Baixar apresentação",
-                    data=ppt_bytes,
-                    file_name=f"{titulo}.pptx",
-                    mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    use_container_width=True
-                )
+                st.rerun()
 
 # ===== Roteamento =====
 if not st.session_state.auth:
