@@ -59,7 +59,7 @@ BASE_CSS = """
   border-radius: 12px !important;
 }
 
-/* marcar corpo dark/light p/ variações */
+/* estado dark em pílulas */
 body:has(.stApp[data-theme="dark"]) .steps .step { border-color:#1f2635; background:#0e1117; color:#eaeaea; }
 </style>
 """
@@ -101,7 +101,6 @@ def apply_theme(dark: bool):
         </style>
         """
     st.markdown(palette, unsafe_allow_html=True)
-    # marca o root com data-theme para CSS condicional
     st.write(f"""<script>
       const root = window.parent.document.querySelector('.stApp');
       if (root) root.setAttribute('data-theme', '{'dark' if dark else 'light'}');
@@ -345,7 +344,7 @@ def render_summary(items, resultados, excluded):
         unsafe_allow_html=True
     )
 
-# ========= PRÉ-VISUALIZAÇÃO COM EXPANDERS =========
+# ========= PRÉ-VISUALIZAÇÃO (sem nested expander) =========
 def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: int):
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
@@ -363,7 +362,10 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
 
     # Ordenação de lojas
     if sort_mode == "Nome da loja (A→Z)":
-        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+        loja_keys = sorted(
+            groups.keys(),
+            key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold())
+        )
     else:
         loja_keys = list(groups.keys())
 
@@ -388,25 +390,34 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
 
     st.caption(f"Excluídas até agora: **{len(excluded)}**")
 
-    # Render por loja (expander)
+    # Render por loja com toggle + container
     for loja in loja_keys:
         imgs = groups[loja]
-        expanded_default = expanded_groups.get(loja, True)
-        with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=expanded_default):
-            lc1, lc2, lc3 = st.columns([1,1,1])
-            with lc1:
-                if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}", use_container_width=True):
-                    for url, _ in imgs: excluded.add(url)
-                    st.rerun()
-            with lc2:
-                if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}", use_container_width=True):
-                    for url, _ in imgs: excluded.discard(url)
-                    st.rerun()
-            with lc3:
-                new_state = st.toggle("Manter este grupo expandido", value=expanded_default, key=f"exp_keep_{hash(loja)}",
-                                      help="Salva a preferência para esta loja.")
-                expanded_groups[loja] = bool(new_state)
+        key_toggle = f"tg_{hash(loja)}"
+        current_state = expanded_groups.get(loja, True)
 
+        st.markdown(
+            f"""<div class="group-head">
+                <div><strong>📄 {loja}</strong> — {len(imgs)} foto(s)</div>
+                <div class="badge">{'Aberto' if current_state else 'Fechado'}</div>
+            </div>""",
+            unsafe_allow_html=True
+        )
+
+        new_state = st.toggle("Manter este grupo visível", value=current_state, key=key_toggle)
+        expanded_groups[loja] = bool(new_state)
+
+        gc1, gc2 = st.columns([1,1])
+        with gc1:
+            if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}", use_container_width=True):
+                for url, _ in imgs: excluded.add(url)
+                st.rerun()
+        with gc2:
+            if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}", use_container_width=True):
+                for url, _ in imgs: excluded.discard(url)
+                st.rerun()
+
+        if expanded_groups[loja]:
             cols = st.columns(thumbs_per_row)
             col_idx = 0
             for (url, (_loja, _end, buf, (w_px, h_px))) in imgs:
@@ -423,7 +434,10 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
                     border_color = "#E53935" if is_excluded else "#DDDDDD"
 
                     st.markdown('<div class="img-card">', unsafe_allow_html=True)
-                    st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color), unsafe_allow_html=True)
+                    st.markdown(
+                        img_to_html_with_border(im, thumb_px, border_px, border_color),
+                        unsafe_allow_html=True
+                    )
 
                     key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
                     checked = st.checkbox("Excluir esta foto", key=key, value=is_excluded)
