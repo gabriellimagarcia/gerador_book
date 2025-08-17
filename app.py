@@ -669,7 +669,7 @@ def main_app():
 
     # ===== 2) Pré-visualização =====
     with st.expander("2. Pré-visualização", expanded=st.session_state.preview_mode):
-        if st.session_state.preview_mode && st.session_state.pipeline:
+        if st.session_state.preview_mode and st.session_state.pipeline:
             p = st.session_state.pipeline
             render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
             render_preview(
