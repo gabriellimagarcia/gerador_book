@@ -59,7 +59,7 @@ BASE_CSS = """
 }
 .dark .group-head { background:#10151f; border-color:#1b2130; }
 
-/* botão SAIR (dentro da área .logout-zone) */
+/* botão SAIR (vermelho) */
 .logout-zone .stButton > button {
   background: #E53935 !important;
   color: #fff !important;
@@ -68,6 +68,18 @@ BASE_CSS = """
 }
 .logout-zone .stButton > button:hover {
   background: #C62828 !important;
+  color: #fff !important;
+}
+
+/* botão RESET (laranja) */
+.reset-zone .stButton > button {
+  background: #FF9800 !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+}
+.reset-zone .stButton > button:hover {
+  background: #F57C00 !important;
   color: #fff !important;
 }
 
@@ -334,10 +346,6 @@ def render_summary(items, resultados, excluded):
 
 # ========= PRÉ-VISUALIZAÇÃO COM EXPANDERS =========
 def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, thumbs_per_row: int):
-    """
-    Pré-visualização: miniaturas em grade, com expandir/recolher por loja.
-    Mantém seleção em st.session_state.excluded_urls e estado dos grupos em st.session_state.expanded_groups.
-    """
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
     if "expanded_groups" not in st.session_state:
@@ -346,74 +354,59 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, t
     excluded = st.session_state.excluded_urls
     expanded_groups = st.session_state.expanded_groups
 
-    # Agrupa por loja
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados:
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
-    # Ordenação de lojas
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
     else:
         loja_keys = list(groups.keys())
 
-    # Toolbar topo
     c1, c2, c3, c4 = st.columns([1,1,1,1])
     with c1:
         if st.button("🧹 Limpar todas as exclusões", type="secondary", use_container_width=True):
-            excluded.clear()
-            st.toast("Exclusões limpas", icon="🧽")
-            st.rerun()
+            excluded.clear(); st.toast("Exclusões limpas", icon="🧽"); st.rerun()
     with c2:
         if st.button("🔁 Inverter seleção", type="secondary", use_container_width=True):
             all_urls = {url for _, v in groups.items() for (url, _) in v}
             st.session_state.excluded_urls = all_urls - excluded
-            st.toast("Seleção invertida", icon="🔁")
-            st.rerun()
+            st.toast("Seleção invertida", icon="🔁"); st.rerun()
     with c3:
         if st.button("➕ Expandir todas", type="secondary", use_container_width=True):
-            for loja in loja_keys:
-                expanded_groups[loja] = True
+            for loja in loja_keys: expanded_groups[loja] = True
             st.rerun()
     with c4:
         if st.button("➖ Recolher todas", type="secondary", use_container_width=True):
-            for loja in loja_keys:
-                expanded_groups[loja] = False
+            for loja in loja_keys: expanded_groups[loja] = False
             st.rerun()
 
     st.caption(f"Excluídas até agora: **{len(excluded)}**")
 
-    # Render por loja (expander)
     for loja in loja_keys:
         imgs = groups[loja]
-        expanded_default = expanded_groups.get(loja, True)  # default expandido
+        expanded_default = expanded_groups.get(loja, True)
         with st.expander(f"📄 {loja} — {len(imgs)} foto(s)", expanded=expanded_default):
-            # Controles rápidos por loja
             lc1, lc2, lc3 = st.columns([1,1,1])
             with lc1:
                 if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}", use_container_width=True):
-                    for url, _ in imgs:
-                        excluded.add(url)
+                    for url, _ in imgs: excluded.add(url)
                     st.rerun()
             with lc2:
                 if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}", use_container_width=True):
-                    for url, _ in imgs:
-                        excluded.discard(url)
+                    for url, _ in imgs: excluded.discard(url)
                     st.rerun()
             with lc3:
-                new_state = st.toggle("Manter este grupo expandido", value=expanded_default, key=f"exp_keep_{hash(loja)}",
-                                      help="Salva a preferência para esta loja.")
+                new_state = st.toggle("Manter este grupo expandido", value=expanded_default, key=f"exp_keep_{hash(loja)}", help="Salva a preferência para esta loja.")
                 expanded_groups[loja] = bool(new_state)
 
-            # Grid de miniaturas (thumbs_per_row colunas)
             cols = st.columns(thumbs_per_row)
             col_idx = 0
             for (url, (_loja, buf, (w_px, h_px))) in imgs:
                 with cols[col_idx]:
                     try:
-                        buf.seek(0)
-                        im = Image.open(buf)
+                        buf.seek(0); im = Image.open(buf)
                     except Exception:
                         st.warning("Não foi possível pré-visualizar esta imagem.")
                         col_idx = (col_idx + 1) % thumbs_per_row
@@ -428,15 +421,32 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, t
 
                     key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
                     checked = st.checkbox("Excluir esta foto", key=key, value=is_excluded)
-                    if checked:
-                        excluded.add(url)
-                    else:
-                        excluded.discard(url)
+                    if checked: excluded.add(url)
+                    else: excluded.discard(url)
                     st.markdown('</div>', unsafe_allow_html=True)
 
                 col_idx = (col_idx + 1) % thumbs_per_row
 
         st.divider()
+
+# ===============================
+# Função RESET
+# ===============================
+def reset_app(preserve_login: bool = True):
+    """Reseta TODOS os estados do app (logos, assinaturas, preview, exclusões, configs etc.).
+    Se preserve_login=True, mantém usuário logado; caso False, também desloga."""
+    user = st.session_state.get("user_email")
+    auth = st.session_state.get("auth", False)
+
+    st.session_state.clear()  # limpa tudo
+
+    if preserve_login and auth:
+        # Reativa login e configura defaults mínimos (sem logo/assinatura ou qualquer cache)
+        st.session_state.auth = True
+        st.session_state.user_email = user
+        st.session_state.dark_mode = False
+        # (Não repõe logo_bytes nem signature_bytes → ficam None)
+    st.rerun()
 
 # ===============================
 # App principal (UX melhorado)
@@ -500,15 +510,22 @@ def main_app():
             max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
             req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
-    # ===== Topo: título e botão SAIR no canto direito (vermelho)
-    top_l, top_r = st.columns([6,1])
+    # ===== Topo: título + botões RESET e SAIR à direita
+    top_l, top_m, top_r = st.columns([5,1,1])
     with top_l:
         st.title("📸 Gerador de Book")
         st.caption("Monte um PPT com fotos por loja, com compressão e layout automático.")
+    with top_m:
+        st.markdown('<div class="reset-zone">', unsafe_allow_html=True)
+        if st.button("Resetar", key="reset_btn", use_container_width=True, type="secondary"):
+            # reseta tudo (logos, assinatura, preview, configs…), mantém login
+            reset_app(preserve_login=True)
+        st.markdown('</div>', unsafe_allow_html=True)
     with top_r:
         st.markdown('<div class="logout-zone">', unsafe_allow_html=True)
         if st.button("Sair", key="logout_btn", use_container_width=True, type="secondary"):
-            st.session_state.clear(); st.rerun()
+            # reseta tudo e desloga
+            reset_app(preserve_login=False)
         st.markdown('</div>', unsafe_allow_html=True)
 
     # ===== Estados
@@ -619,19 +636,7 @@ def main_app():
     if st.session_state.preview_mode and st.session_state.pipeline:
         render_steps(2)
         p = st.session_state.pipeline
-        # Resumo
-        total_urls = len(p["items"])
-        baixadas = sum(1 for _, url in p["items"] if url in p["resultados"])
-        lojas = len({loja for loja, _ in p["items"]})
-        st.markdown(
-            f"**Resumo:** "
-            f"<span class='badge'>Lojas: {lojas}</span> "
-            f"<span class='badge'>Links: {total_urls}</span> "
-            f"<span class='badge'>Baixadas: {baixadas}</span> "
-            f"<span class='badge'>Excluídas: {len(st.session_state.excluded_urls)}</span>",
-            unsafe_allow_html=True
-        )
-        # Render com expanders
+        render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
         render_preview(
             p["items"], p["resultados"],
             p["settings"]["max_per_slide"],
@@ -675,3 +680,4 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
+
