@@ -54,6 +54,8 @@ BASE_CSS = """
 }
 
 body:has(.stApp[data-theme="dark"]) .steps .step { border-color:#1f2635; background:#0e1117; color:#eaeaea; }
+
+.group-head {display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem;}
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
@@ -301,7 +303,7 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
         return (url, False, None, None)
 
 # ===============================
-# PPT helpers
+# PPT helpers (padrão)
 # ===============================
 def get_slots(n, prs):
     IMG_TOP = Inches(1.2); CONTENT_W = Inches(11); CONTENT_H = Inches(6); GAP = Inches(0.2)
@@ -402,6 +404,107 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
             slots = get_slots(len(batch), prs)
             for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+
+    out = BytesIO(); prs.save(out); out.seek(0); return out
+
+# ===============================
+# PPT helpers (USO DE MODELO .PPTX)
+# ===============================
+def _delete_slide(prs: Presentation, index: int):
+    """Remove um slide por índice (hack suportado pelo python-pptx)."""
+    sldIdLst = prs.slides._sldIdLst  # noqa: protected member
+    slide_id = sldIdLst[index].rId
+    prs.part.drop_rel(slide_id)
+    del sldIdLst[index]
+
+def gerar_ppt_com_modelo(
+    template_bytes: bytes,
+    items, resultados, titulo,
+    max_per_slide, sort_mode,
+    bg_rgb,
+    logo_bytes=None, logo_width_in=1.2,
+    signature_bytes=None, signature_width_in=None, auto_half_signature=True,
+    signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
+    title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
+    excluded_urls=None,
+    cover_idx=0, back_idx=1, content_idx=2, final_idx=3,
+):
+    """
+    Gera um PPT usando um modelo .pptx:
+    - Mantém capa e contracapa (se existirem).
+    - Usa o layout do slide 'content_idx' para gerar todos os slides com fotos.
+    - (Opcional) Adiciona o slide final (via layout do 'final_idx') no fim.
+    Observação: copiar um slide completo não é suportado; usamos os LAYOUTS.
+    """
+    excluded_urls = excluded_urls or set()
+
+    prs = Presentation(BytesIO(template_bytes))
+    num_slides_in_template = len(prs.slides)
+
+    def _safe_idx(i): return i if 0 <= i < num_slides_in_template else None
+    cover_idx  = _safe_idx(cover_idx)
+    back_idx   = _safe_idx(back_idx)
+    content_idx= _safe_idx(content_idx)
+    final_idx  = _safe_idx(final_idx)
+
+    content_layout = None
+    final_layout = None
+    if content_idx is not None:
+        content_layout = prs.slides[content_idx].slide_layout
+    if final_idx is not None and final_idx != content_idx:
+        final_layout = prs.slides[final_idx].slide_layout
+
+    # remove do arquivo o slide de conteúdo/final originais para não ficarem perdidos no meio
+    to_delete = []
+    if final_idx is not None: to_delete.append(final_idx)
+    if content_idx is not None: to_delete.append(content_idx)
+    to_delete = sorted(set(i for i in to_delete if i is not None), reverse=True)
+    for i in to_delete:
+        if i not in (cover_idx, back_idx):
+            _delete_slide(prs, i)
+
+    groups = OrderedDict()
+    for loja, endereco, url in items:
+        if url in resultados and url not in excluded_urls:
+            groups.setdefault(str(loja), []).append((url, resultados[url]))
+
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+    else:
+        loja_keys = list(groups.keys())
+
+    blank_layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
+    title_rgb = pick_contrast_color(*bg_rgb)
+    signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
+
+    def _set_bg_if_needed(slide):
+        # Se quiser forçar cor de fundo específica (em vez da do layout), descomente:
+        # set_slide_bg(slide, bg_rgb)
+        pass
+
+    for loja in loja_keys:
+        imgs = groups[loja]
+        for i in range(0, len(imgs), max_per_slide):
+            batch = imgs[i:i+max_per_slide]
+            slide = prs.slides.add_slide(content_layout or blank_layout)
+            _set_bg_if_needed(slide)
+
+            first_url, (_loja, endereco, _buf0, _wh0) = batch[0]
+            add_title_and_address(slide, loja, endereco, title_rgb,
+                                  title_font_name, title_font_size_pt, title_font_bold)
+
+            if logo_bytes: add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
+            if signature_bytes:
+                add_signature_bottom_right(slide, prs, signature_bytes, signature_width,
+                                           bottom_margin_in=signature_bottom_margin_in,
+                                           right_margin_in=signature_right_margin_in)
+
+            slots = get_slots(len(batch), prs)
+            for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+
+    if final_layout is not None:
+        prs.slides.add_slide(final_layout)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
@@ -608,30 +711,51 @@ def main_app():
             signature_right_margin_in = st.slider("Margem direita (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_right_margin")
             signature_bottom_margin_in = st.slider("Margem inferior (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_bottom_margin")
 
+        # ===== NOVO: Utilizar modelo (PPTX)
+        with st.expander("📑 Utilizar modelo (PPTX)", expanded=False):
+            use_template = st.toggle("Usar modelo .pptx (capa, contracapa, layout e final)", value=False, key="use_template")
+            if use_template:
+                template_file = st.file_uploader("Modelo (PPTX)", type=["pptx"], key="template_uploader")
+                st.caption("O modelo deve ter pelo menos 3 slides: Capa (0), Contracapa (1), Layout de conteúdo (2). Opcional: Slide final (3).")
+
+                colA, colB = st.columns(2)
+                with colA:
+                    st.number_input("Índice da Capa (0=primeiro)", 0, 20, 0, key="template_cover_idx")
+                    st.number_input("Índice do Layout de Conteúdo", 0, 20, 2, key="template_content_idx")
+                with colB:
+                    st.number_input("Índice da Contracapa", 0, 20, 1, key="template_back_idx")
+                    st.number_input("Índice do Slide Final", 0, 20, 3, key="template_final_idx")
+
+                if "template_bytes" not in st.session_state: st.session_state.template_bytes = None
+                if template_file:
+                    st.session_state.template_bytes = template_file.getvalue()
+            else:
+                st.session_state.template_bytes = None
+
         with st.expander("🎭 Efeitos nas fotos", expanded=False):
             st.caption("Ative efeitos opcionais. Sombra e cantos arredondados preservam transparência (PNG).")
             fx_shadow = st.checkbox("Sombra projetada", value=False, key="fx_shadow")
-            shadow_blur = st.slider("Intensidade da sombra (blur)", 0, 30, 10, 1, key="fx_shadow_blur", disabled=not fx_shadow)
-            shadow_offset = st.slider("Deslocamento da sombra (px)", 0, 30, 8, 1, key="fx_shadow_offset", disabled=not fx_shadow)
-            shadow_opacity = st.slider("Opacidade da sombra (%)", 10, 100, 40, 5, key="fx_shadow_opac", disabled=not fx_shadow)
+            st.slider("Intensidade da sombra (blur)", 0, 30, 10, 1, key="fx_shadow_blur", disabled=not fx_shadow)
+            st.slider("Deslocamento da sombra (px)", 0, 30, 8, 1, key="fx_shadow_offset", disabled=not fx_shadow)
+            st.slider("Opacidade da sombra (%)", 10, 100, 40, 5, key="fx_shadow_opac", disabled=not fx_shadow)
 
             fx_round = st.checkbox("Borda arredondada", value=False, key="fx_round")
-            round_radius = st.slider("Raio dos cantos (px)", 0, 60, 20, 2, key="fx_round_radius", disabled=not fx_round)
+            st.slider("Raio dos cantos (px)", 0, 60, 20, 2, key="fx_round_radius", disabled=not fx_round)
 
             fx_border = st.checkbox("Borda colorida", value=False, key="fx_border")
-            border_color_hex = st.color_picker("Cor da borda", value="#DDDDDD", key="fx_border_color", disabled=not fx_border)
-            border_width = st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
+            st.color_picker("Cor da borda", value="#DDDDDD", key="fx_border_color", disabled=not fx_border)
+            st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
 
         with st.expander("⚡ Performance & Qualidade", expanded=False):
-            thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
-            thumbs_per_row = st.slider("Miniaturas por linha (pré-visualização)", 2, 8, 4, 1, key="thumbs_per_row")
+            st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
+            st.slider("Miniaturas por linha (pré-visualização)", 2, 8, 4, 1, key="thumbs_per_row")
             st.caption("Redimensionamento / compressão")
-            target_w = st.number_input("Largura máx (px)", 480, 4096, 1280, 10, key="target_w")
-            target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
-            limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10, key="limite_kb")
+            st.number_input("Largura máx (px)", 480, 4096, 1280, 10, key="target_w")
+            st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
+            st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10, key="limite_kb")
             st.caption("Rede e paralelismo")
-            max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
-            req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
+            st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
+            st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
     # ===== Topo
     top_l, top_m, top_r = st.columns([5,1,1])
@@ -752,6 +876,16 @@ def main_app():
                 status.write(f"Concluído. Falhas: {falhas}")
                 st.toast("Pré-visualização pronta ✅", icon="✅")
 
+                # guarda config de template no estado
+                template_cfg = {
+                    "use_template": st.session_state.get("use_template", False),
+                    "template_bytes": st.session_state.get("template_bytes"),
+                    "cover_idx": st.session_state.get("template_cover_idx", 0),
+                    "back_idx": st.session_state.get("template_back_idx", 1),
+                    "content_idx": st.session_state.get("template_content_idx", 2),
+                    "final_idx": st.session_state.get("template_final_idx", 3),
+                }
+
                 st.session_state.pipeline = {
                     "items": items, "resultados": resultados, "falhas": falhas,
                     "settings": {
@@ -771,6 +905,7 @@ def main_app():
                         "thumb_px": st.session_state["thumb_px"],
                         "thumbs_per_row": st.session_state["thumbs_per_row"],
                         "effects": fx_cfg,
+                        "template": template_cfg,
                     }
                 }
                 st.session_state.preview_mode = True
@@ -791,7 +926,7 @@ def main_app():
             )
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT, depois use a etapa 3.")
 
-    # ===== 3) Gerar PPT (alinhado)
+    # ===== 3) Gerar PPT
     with st.expander("3. Gerar PPT", expanded=st.session_state.preview_mode):
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -820,16 +955,38 @@ def main_app():
                 items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
                 titulo = (st.session_state.output_filename or "Apresentacao").strip()
 
-                ppt_bytes = gerar_ppt(
-                    items, resultados, titulo,
-                    cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
-                    cfg["logo_bytes"], cfg["logo_width_in"],
-                    cfg["signature_bytes"], cfg["signature_width_in"],
-                    cfg["auto_half_signature"],
-                    cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
-                    cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
-                    excluded_urls=st.session_state.excluded_urls
-                )
+                tpl = cfg.get("template", {}) or {}
+                use_template = tpl.get("use_template") and tpl.get("template_bytes")
+
+                if use_template:
+                    ppt_bytes = gerar_ppt_com_modelo(
+                        tpl["template_bytes"],
+                        items, resultados, titulo,
+                        cfg["max_per_slide"], cfg["sort_mode"],
+                        cfg["bg_rgb"],
+                        cfg["logo_bytes"], cfg["logo_width_in"],
+                        cfg["signature_bytes"], cfg["signature_width_in"],
+                        cfg["auto_half_signature"],
+                        cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
+                        cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
+                        excluded_urls=st.session_state.excluded_urls,
+                        cover_idx=tpl.get("cover_idx", 0),
+                        back_idx=tpl.get("back_idx", 1),
+                        content_idx=tpl.get("content_idx", 2),
+                        final_idx=tpl.get("final_idx", 3),
+                    )
+                else:
+                    ppt_bytes = gerar_ppt(
+                        items, resultados, titulo,
+                        cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
+                        cfg["logo_bytes"], cfg["logo_width_in"],
+                        cfg["signature_bytes"], cfg["signature_width_in"],
+                        cfg["auto_half_signature"],
+                        cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
+                        cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
+                        excluded_urls=st.session_state.excluded_urls
+                    )
+
                 st.session_state.ppt_bytes = ppt_bytes
                 st.session_state.generated = True
                 st.rerun()
