@@ -3,7 +3,7 @@ import re
 import hashlib
 import base64
 from io import BytesIO
-from collections import OrderedDict, defaultdict
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import streamlit as st
@@ -36,19 +36,15 @@ BASE_CSS = """
 }
 .dark .action-bar { background: rgba(14,17,23,0.9); border-top-color:#222; }
 
-/* container interno da action bar */
 .action-inner { max-width: 1200px; margin: 0 auto; display:flex; gap:12px; align-items:center; justify-content:flex-end; }
 
 /* cards da pré-visualização */
 .img-card {
   border:1px solid #DDD; border-radius:10px; padding:10px; transition: all .15s ease;
-  background:#fff; display:flex; flex-direction:column; gap:8px;
+  background:#fff; display:flex; flex-direction:column; gap:8px; height:100%;
 }
 .dark .img-card { background:#0f131a; border-color:#232a36; }
 .img-card:hover { box-shadow: 0 8px 20px rgba(0,0,0,0.06); transform: translateY(-2px); }
-
-/* checkbox alinhado com imagem */
-.img-check { display:flex; align-items:center; gap:8px; }
 
 /* badge com números */
 .badge {
@@ -59,18 +55,23 @@ BASE_CSS = """
 /* cabeçalho de grupo (loja) */
 .group-head {
   display:flex; align-items:center; justify-content:space-between;
-  padding:8px 12px; border-radius:8px; background:#F8FAFC; border:1px solid #EEF2F7; margin-bottom:6px;
+  padding:8px 12px; border-radius:8px; background:#F8FAFC; border:1px solid #EEF2F7; margin: 10px 0 6px;
 }
 .dark .group-head { background:#10151f; border-color:#1b2130; }
 
-/* títulos mais próximos */
-.block-title { margin: 0 0 4px; }
-.small { color:#6B7280; font-size:13px; }
+/* botão SAIR (dentro da área .logout-zone) */
+.logout-zone .stButton > button {
+  background: #E53935 !important;
+  color: #fff !important;
+  border: none !important;
+  border-radius: 10px !important;
+}
+.logout-zone .stButton > button:hover {
+  background: #C62828 !important;
+  color: #fff !important;
+}
 
-/* cor laranja para links/ações */
-a, .accent { color:#FF7A00; }
-
-/* deixar o body saber se é dark */
+/* marcar corpo como dark/light para CSS global */
 body:has(.stApp[data-theme="dark"]) .action-bar { background: rgba(14,17,23,0.9); border-top-color:#222; }
 </style>
 """
@@ -87,15 +88,11 @@ def apply_theme(dark: bool):
             --text: #f5f5f5; --bg: #0e1117; --panel: #11151c;
         }}
         .stApp {{ background-color: var(--bg); color: var(--text); }}
-        .stApp[data-theme="dark"] {{ }}
         section[data-testid="stSidebar"] > div {{ background: var(--panel); border-right: 1px solid #1b212c; }}
         h1,h2,h3,h4,h5,h6 {{ color: var(--text); }}
         .stButton > button, .stDownloadButton > button {{ background: var(--accent); color: #fff; border-radius:10px; border:none; }}
         .stButton > button:hover, .stDownloadButton > button:hover {{ background: var(--accent-hover); color:#fff; }}
         .stProgress > div > div {{ background-color: var(--accent); }}
-        /* marca o body como dark para CSS global */
-        .stApp:after {{ content:""; display:none; }}
-        .stApp {{ }}
         </style>
         """
     else:
@@ -114,7 +111,6 @@ def apply_theme(dark: bool):
         </style>
         """
     st.markdown(palette, unsafe_allow_html=True)
-    # flag para CSS global
     st.write(f"""<script>
       const root = window.parent.document.querySelector('.stApp');
       if (root) root.setAttribute('data-theme', '{'dark' if dark else 'light'}');
@@ -314,7 +310,6 @@ def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, b
     return f'<img src="data:image/png;base64,{b64}" style="{style}" />'
 
 def render_steps(current: int):
-    # 1=upload, 2=preview, 3=generate
     labels = ["Upload", "Pré-visualização", "Gerar PPT"]
     html = ['<div class="steps">']
     for i, txt in enumerate(labels, start=1):
@@ -337,20 +332,23 @@ def render_summary(items, resultados, excluded):
         unsafe_allow_html=True
     )
 
-def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
+def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int, thumbs_per_row: int):
+    """Pré-visualização: miniaturas lado a lado (grades), independente de max_per_slide."""
     if "excluded_urls" not in st.session_state:
         st.session_state.excluded_urls = set()
     excluded = st.session_state.excluded_urls
 
+    # agrupa por loja
     groups = OrderedDict()
     for loja, url in items:
         if url in resultados:
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
+    # ordenação
     loja_keys = (sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
                  if sort_mode == "Nome da loja (A→Z)" else list(groups.keys()))
 
-    # barra de ferramentas da prévia
+    # toolbar da prévia
     c1, c2, c3 = st.columns([1,1,1])
     with c1:
         if st.button("🧹 Limpar todas as exclusões", type="secondary", use_container_width=True):
@@ -363,31 +361,38 @@ def render_preview(items, resultados, max_per_slide, sort_mode, thumb_px: int):
     with c3:
         st.caption(f"Excluídas até agora: **{len(excluded)}**")
 
-    # preview por loja
+    # render por loja em grade (thumbs_per_row colunas fixas)
     for loja in loja_keys:
         imgs = groups[loja]
         st.markdown(f'<div class="group-head"><strong>{loja}</strong><span class="small">{len(imgs)} foto(s)</span></div>', unsafe_allow_html=True)
-        for i in range(0, len(imgs), max_per_slide):
-            batch = imgs[i:i+max_per_slide]
-            cols = st.columns(len(batch))
-            for col, (url, (_loja, buf, (w_px, h_px))) in zip(cols, batch):
-                with col:
-                    try:
-                        buf.seek(0); im = Image.open(buf)
-                    except Exception:
-                        st.warning("Não foi possível pré-visualizar esta imagem."); continue
-                    is_excluded = url in excluded
-                    border_px = 3 if is_excluded else 1
-                    border_color = "#E53935" if is_excluded else "#DDDDDD"
 
-                    st.markdown('<div class="img-card">', unsafe_allow_html=True)
-                    st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color), unsafe_allow_html=True)
-                    key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
-                    default = is_excluded
-                    checked = st.checkbox("Excluir esta foto", key=key, value=default)
-                    if checked: excluded.add(url)
-                    else: excluded.discard(url)
-                    st.markdown('</div>', unsafe_allow_html=True)
+        cols = st.columns(thumbs_per_row)
+        col_idx = 0
+        for (url, (_loja, buf, (w_px, h_px))) in imgs:
+            with cols[col_idx]:
+                try:
+                    buf.seek(0); im = Image.open(buf)
+                except Exception:
+                    st.warning("Não foi possível pré-visualizar esta imagem."); 
+                    col_idx = (col_idx + 1) % thumbs_per_row
+                    continue
+
+                is_excluded = url in excluded
+                border_px = 3 if is_excluded else 1
+                border_color = "#E53935" if is_excluded else "#DDDDDD"
+
+                st.markdown('<div class="img-card">', unsafe_allow_html=True)
+                st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color), unsafe_allow_html=True)
+
+                key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
+                default = is_excluded
+                checked = st.checkbox("Excluir esta foto", key=key, value=default)
+                if checked: excluded.add(url)
+                else: excluded.discard(url)
+                st.markdown('</div>', unsafe_allow_html=True)
+
+            col_idx = (col_idx + 1) % thumbs_per_row
+
         st.divider()
 
 # ===============================
@@ -401,23 +406,18 @@ def main_app():
 
         with st.expander("📄 Planilha & Layout", expanded=True):
             st.caption("Colunas da planilha (nomes exatos do cabeçalho):")
-            loja_col = st.text_input("🛒 Coluna de LOJA", value="Selecione sua loja", key="loja_col",
-                                     help="Nome da coluna no Excel que identifica a loja.")
-            img_col  = st.text_input("🖼️ Coluna de FOTOS", value="Faça o upload das fotos", key="img_col",
-                                     help="Nome da coluna no Excel que contém os links das imagens.")
+            loja_col = st.text_input("🛒 Coluna de LOJA", value="Selecione sua loja", key="loja_col")
+            img_col  = st.text_input("🖼️ Coluna de FOTOS", value="Faça o upload das fotos", key="img_col")
             st.caption("Layout dos slides")
-            max_per_slide = st.selectbox("📐 Fotos por slide (máx.)", [1, 2, 3], index=0, key="max_per_slide",
-                                         help="Agrupa até N fotos por slide, sempre da mesma loja.")
+            max_per_slide = st.selectbox("📐 Fotos por slide (máx.)", [1, 2, 3], index=0, key="max_per_slide")
             st.caption("Ordenação")
             sort_mode = st.selectbox("🔤 Ordenar lojas por",
-                ["Ordem original do Excel", "Nome da loja (A→Z)"], index=0, key="sort_mode",
-                help="A ordem original respeita a sequência das linhas no Excel.")
+                ["Ordem original do Excel", "Nome da loja (A→Z)"], index=0, key="sort_mode")
 
         with st.expander("🎨 Aparência do slide", expanded=True):
             bg_hex = st.color_picker("🎨 Cor de fundo", value="#FFFFFF", key="bg_hex")
             st.caption("Título do slide")
-            title_font_name = st.text_input("Fonte do título", value="Radikal", key="title_font_name",
-                                            help="A fonte precisa estar instalada na máquina de quem abrir o PPT.")
+            title_font_name = st.text_input("Fonte do título", value="Radikal", key="title_font_name")
             title_font_size_pt = st.slider("Tamanho (pt)", 8, 48, 18, 1, key="title_font_size_pt")
             title_font_bold = st.checkbox("Negrito", value=True, key="title_font_bold")
 
@@ -437,9 +437,7 @@ def main_app():
             auto_half_signature = st.checkbox("Usar 1/2 do tamanho do logo (recomendado)", value=True, key="auto_half_signature")
             derived_default_sig = (st.session_state.get("logo_width_in", 1.2) / 2.0)
             if not auto_half_signature:
-                signature_width_in = st.slider("Largura da assinatura (pol)",
-                                               0.3, 2.0, float(derived_default_sig), 0.05,
-                                               key="signature_width_in")
+                signature_width_in = st.slider("Largura da assinatura (pol)", 0.3, 2.0, float(derived_default_sig), 0.05, key="signature_width_in")
             else:
                 if "signature_width_in" not in st.session_state:
                     st.session_state.signature_width_in = float(derived_default_sig)
@@ -450,6 +448,7 @@ def main_app():
 
         with st.expander("⚡ Performance & Qualidade", expanded=False):
             thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
+            thumbs_per_row = st.slider("Miniaturas por linha (pré-visualização)", 2, 8, 4, 1, key="thumbs_per_row")
             st.caption("Redimensionamento / compressão")
             target_w = st.number_input("Largura máx (px)", 480, 4096, 1280, 10, key="target_w")
             target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
@@ -458,18 +457,25 @@ def main_app():
             max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
             req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
-    # ===== Cabeçalho e etapas
-    st.title("📸 Gerador de Book")
-    st.caption("Monte um PPT com fotos por loja, com compressão e layout automático.")
+    # ===== Topo: título e botão SAIR no canto direito (vermelho)
+    top_l, top_r = st.columns([6,1])
+    with top_l:
+        st.title("📸 Gerador de Book")
+        st.caption("Monte um PPT com fotos por loja, com compressão e layout automático.")
+    with top_r:
+        st.markdown('<div class="logout-zone">', unsafe_allow_html=True)
+        if st.button("Sair", key="logout_btn", use_container_width=True, type="secondary"):
+            st.session_state.clear(); st.rerun()
+        st.markdown('</div>', unsafe_allow_html=True)
 
     # Estados
     if "pipeline" not in st.session_state: st.session_state.pipeline = {}
     if "excluded_urls" not in st.session_state: st.session_state.excluded_urls = set()
     if "preview_mode" not in st.session_state: st.session_state.preview_mode = False
 
-    # Upload
+    # Etapas e Upload
     render_steps(1 if not st.session_state.preview_mode else 2)
-    up = st.file_uploader("1) Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload", help="A planilha precisa ter as colunas indicadas na sidebar.")
+    up = st.file_uploader("1) Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload")
 
     # Barra fixa de ações
     st.markdown("""
@@ -483,7 +489,7 @@ def main_app():
     with bcol3:
         btn_generate = st.button("⬇️ Gerar PPT", key="btn_generate", use_container_width=True)
 
-    # Processamento para PRÉVIA
+    # Processar planilha para PRÉVIA
     if btn_preview:
         if not up:
             st.warning("Envie a planilha primeiro.")
@@ -560,6 +566,7 @@ def main_app():
                     "signature_right_margin_in": st.session_state.get("sig_right_margin", 0.20),
                     "signature_bottom_margin_in": st.session_state.get("sig_bottom_margin", 0.20),
                     "thumb_px": st.session_state["thumb_px"],
+                    "thumbs_per_row": st.session_state["thumbs_per_row"],
                 }
             }
             st.session_state.preview_mode = True
@@ -573,7 +580,8 @@ def main_app():
             p["items"], p["resultados"],
             p["settings"]["max_per_slide"],
             p["settings"]["sort_mode"],
-            p["settings"]["thumb_px"]
+            p["settings"]["thumb_px"],
+            p["settings"]["thumbs_per_row"]  # <<<<< miniaturas lado a lado
         )
         st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT. Depois clique em **Gerar PPT** na barra inferior.")
 
@@ -610,9 +618,4 @@ def main_app():
 if not st.session_state.auth:
     do_login()
 else:
-    top_l, top_r = st.columns([1,1])
-    with top_l: st.caption(f"Logado como: **{st.session_state.user_email}**")
-    with top_r:
-        if st.button("Sair", type="secondary"):
-            st.session_state.clear(); st.rerun()
     main_app()
