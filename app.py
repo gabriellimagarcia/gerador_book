@@ -130,6 +130,7 @@ ALLOWED_USERS = {
     "lucas.depaula@mkthouse.com.br": "mudar12345",
     "janaina.morais@mkthouse.com.br": "mudar12345",
     "debora.ramos@mkthouse.com.br": "mudar12345",
+    "david.silva@mkthouse.com.br": "mudar12345",
 }
 ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
 
