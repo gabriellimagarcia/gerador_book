@@ -14,9 +14,9 @@ from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # CONFIG GERAL
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 st.set_page_config(page_title="Gerador de Book", page_icon="📸", layout="wide")
 
 # --- CSS básico (UX) ---
@@ -57,9 +57,33 @@ BASE_CSS = """
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
-# -----------------------------------------------------------------------------
+# --- CSS extra (login mais "laranja") ---
+LOGIN_CSS = """
+<style>
+.login-hero {
+  background: linear-gradient(90deg, #FF7A00 0%, #FF9944 100%);
+  color:#fff; padding:18px 16px; border-radius:14px; 
+  font-weight:800; margin: 8px 0 18px 0;
+}
+.login-card {
+  border:1px solid #FFD1B3; background:#FFF7F0; 
+  padding:18px; border-radius:14px;
+}
+.login-note {
+  color:#7A3E00; font-size:13px; margin-top:6px;
+}
+.stForm .stButton > button {
+  background:#FF7A00 !important; color:#fff !important; 
+  border:none !important; border-radius:10px !important; 
+  font-weight:800 !important;
+}
+.stForm .stButton > button:hover { background:#E66E00 !important; }
+</style>
+"""
+
+# -------------------------------------------------------------------
 # TEMA
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 def apply_theme(dark: bool):
     ORANGE = "#FF7A00"; ORANGE_HOVER = "#E66E00"; BLACK = "#111111"; GRAY_BG = "#f6f6f7"
     if dark:
@@ -89,9 +113,9 @@ def apply_theme(dark: bool):
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # LOGIN
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 ALLOWED_USERS = {
     "lucas.costa@mkthouse.com.br": "mudar12345",
     "gabriel.garcia@mkthouse.com.br": "Peter2025!",
@@ -108,11 +132,17 @@ ALLOWED_USERS = {
 ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
 
 def do_login():
+    st.markdown(LOGIN_CSS, unsafe_allow_html=True)
     st.title("🔐 Acesso")
+    st.markdown('<div class="login-hero">📸 Gerador de Book — Acesso restrito</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
     with st.form("login_form", clear_on_submit=False):
         email = st.text_input("E-mail", placeholder="seu.email@mkthouse.com.br")
         pwd = st.text_input("Senha", type="password", placeholder="••••••••")
         entrar = st.form_submit_button("Entrar")
+    st.markdown('<div class="login-note">Use seu e-mail corporativo. Em caso de dúvidas, contate o BI.</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
     if entrar:
         email_norm = (email or "").strip().lower()
         if email_norm in ALLOWED_USERS and pwd == ALLOWED_USERS[email_norm]:
@@ -125,9 +155,9 @@ def do_login():
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # UTILS
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 URL_RE = re.compile(r'https?://\S+')
 
 def extrair_links(celula):
@@ -166,9 +196,9 @@ def pick_contrast_color(r, g, b):
     brightness = (r*299 + g*587 + b*114) / 1000
     return (0,0,0) if brightness > 128 else (255,255,255)
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # EFEITOS (sombra, cantos, borda)
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 def _hex_to_rgba_tuple(hex_color, alpha=255):
     s = hex_color.strip().lstrip("#")
     if len(s) == 3: s = "".join([c*2 for c in s])
@@ -232,9 +262,9 @@ def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
         )
     return out
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # DOWNLOAD & PROCESS
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
     try:
         r = session.get(url, timeout=timeout, stream=True)
@@ -252,22 +282,15 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
             img_rgba = img.convert("RGBA")
 
         if need_alpha:
-            # 1) PNG com alpha
-            buf = BytesIO()
-            img_rgba.save(buf, format="PNG", optimize=True)
+            buf = BytesIO(); img_rgba.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
-                buf.seek(0)
-                w, h = img_rgba.size
+                buf.seek(0); w, h = img_rgba.size
                 return (url, True, buf, (w, h))
-            # 2) PNG paletizado
             pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
-            buf = BytesIO()
-            pal.save(buf, format="PNG", optimize=True)
+            buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
-                buf.seek(0)
-                w, h = img_rgba.size
+                buf.seek(0); w, h = img_rgba.size
                 return (url, True, buf, (w, h))
-            # 3) Fallback JPEG fundo branco
             bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
             bg.paste(img_rgba, mask=img_rgba.split()[-1])
             buf = comprimir_jpeg_binsearch(bg, limite_kb)
@@ -280,9 +303,9 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
     except Exception:
         return (url, False, None, None)
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # PPT HELPERS
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 def get_slots(n, prs):
     IMG_TOP = Inches(1.2); CONTENT_W = Inches(11); CONTENT_H = Inches(6); GAP = Inches(0.2)
     start_left = (prs.slide_width - CONTENT_W) / 2
@@ -339,16 +362,15 @@ def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_wid
     top  = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
     slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
 
-# mover slide (sem recriar)
 def move_slide_to_index(prs, old_index, new_index):
     sldIdLst = prs.slides._sldIdLst
     sld = sldIdLst[old_index]
     sldIdLst.remove(sld)
     sldIdLst.insert(new_index, sld)
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # GERADOR COM MODELO (apenas CAPA e FINAL)
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 def gerar_ppt_modelo_capa_final(
     template_bytes: bytes,
     items, resultados, titulo,
@@ -361,10 +383,7 @@ def gerar_ppt_modelo_capa_final(
 ):
     excluded_urls = excluded_urls or set()
     prs = Presentation(BytesIO(template_bytes))
-
-    # Indices: 0=capa, 1=final (esperado)
     final_idx = 1 if len(prs.slides) >= 2 else None
-
     blank_layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
 
     groups = OrderedDict()
@@ -380,7 +399,6 @@ def gerar_ppt_modelo_capa_final(
     title_rgb = pick_contrast_color(*bg_rgb)
     signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
 
-    # Conteúdo após os slides já existentes (capa & final temporariamente)
     for loja in loja_keys:
         imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
@@ -403,15 +421,14 @@ def gerar_ppt_modelo_capa_final(
             for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
-    # Mover o slide FINAL original para o fim
     if final_idx is not None and final_idx < len(prs.slides):
         move_slide_to_index(prs, final_idx, len(prs.slides)-1)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
-# -----------------------------------------------------------------------------
-# PREVIEW (UI)
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
+# PREVIEW (UI) — com callbacks em 1 clique
+# -------------------------------------------------------------------
 def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, border_color: str):
     im = image.copy(); im.thumbnail((width_px, width_px))
     buf = BytesIO(); im.save(buf, format="PNG")
@@ -442,16 +459,18 @@ def render_summary(items, resultados, excluded):
         unsafe_allow_html=True
     )
 
-# --- callbacks para botões de grupo ---
+# --- callbacks para botões de grupo (agora com 1 clique) ---
 def _cb_select_all(loja, imgs):
     excluded = st.session_state.excluded_urls
     for url, _ in imgs:
         excluded.add(url)
+    st.rerun()  # atualiza imediatamente
 
 def _cb_clear_group(loja, imgs):
     excluded = st.session_state.excluded_urls
     for url, _ in imgs:
         excluded.discard(url)
+    st.rerun()  # atualiza imediatamente
 
 def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: int):
     if "excluded_urls" not in st.session_state:
@@ -550,38 +569,47 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
                 col_idx = (col_idx + 1) % thumbs_per_row
         st.divider()
 
-# -----------------------------------------------------------------------------
-# RESET
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
+# RESET (agora limpa também o arquivo gerado)
+# -------------------------------------------------------------------
 def reset_app(preserve_login: bool = True):
     user = st.session_state.get("user_email")
     auth = st.session_state.get("auth", False)
-    # limpar tudo
+
     st.session_state.clear()
-    # reiniciar chaves de uploaders para limpar arquivos
+
+    # reiniciar chaves dos uploaders e do download
     st.session_state.xlsx_key = 0
     st.session_state.template_key = 0
     st.session_state.logo_key = 0
     st.session_state.sign_key = 0
-    # estados de expanders padrão (apenas Planilha & Layout aberto)
+    st.session_state.download_key = 0
+
+    # estados de expanders padrão
     st.session_state.exp_plan = True
     st.session_state.exp_style = False
     st.session_state.exp_brand = False
     st.session_state.exp_fx = False
     st.session_state.exp_perf = False
     st.session_state.exp_model = False
+
+    # limpar artefatos gerados
+    st.session_state.ppt_bytes = None
+    st.session_state.generated = False
+    st.session_state.output_filename = "Modelo_01"
+
     if preserve_login and auth:
         st.session_state.auth = True
         st.session_state.user_email = user
         st.session_state.dark_mode = False
     st.rerun()
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # APP
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 def main_app():
     # Inicializações de primeira carga
-    for k in ["xlsx_key","template_key","logo_key","sign_key"]:
+    for k in ["xlsx_key","template_key","logo_key","sign_key","download_key"]:
         if k not in st.session_state: st.session_state[k] = 0
     if "exp_plan" not in st.session_state:
         st.session_state.exp_plan = True
@@ -695,6 +723,7 @@ def main_app():
             st.session_state.template_key += 1
             st.session_state.logo_key += 1
             st.session_state.sign_key += 1
+            st.session_state.download_key += 1  # garante remoção do botão de download
             reset_app(preserve_login=True)
         st.markdown('</div>', unsafe_allow_html=True)
     with top_r:
@@ -714,7 +743,7 @@ def main_app():
 
     # 1) Upload
     with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
-        up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"],
+        up = st.file_uploader("Selecione a planilha (.xlsx)", type=["xlsx"],
                               key=f"xlsx_upload_{st.session_state.xlsx_key}")
         btn_preview = st.button("🔎 Pré-visualizar", key="btn_preview", use_container_width=True)
 
@@ -826,7 +855,7 @@ def main_app():
                 st.session_state.preview_mode = True
                 st.session_state.generated = False
                 st.session_state.ppt_bytes = None
-                # a partir daqui, mantenho os expanders recolhidos por padrão
+                # recolhe expanders
                 st.session_state.exp_plan = False
                 st.session_state.exp_style = False
                 st.session_state.exp_brand = False
@@ -864,7 +893,8 @@ def main_app():
                     data=st.session_state.ppt_bytes,
                     file_name=f"{(st.session_state.output_filename or 'Apresentacao')}.pptx",
                     mime="application/vnd.openxmlformats-officedocument.presentationml.presentation",
-                    use_container_width=True
+                    use_container_width=True,
+                    key=f"download_{st.session_state.download_key}"   # respeita reset
                 )
             else:
                 btn_generate = st.button("⬇️ Gerar PPT", key="btn_generate", use_container_width=True)
@@ -898,7 +928,6 @@ def main_app():
                         excluded_urls=st.session_state.excluded_urls
                     )
                 else:
-                    # Sem modelo: gera só conteúdo
                     prs = Presentation()
                     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
                     blank = prs.slide_layouts[6]
@@ -941,10 +970,15 @@ def main_app():
                 st.session_state.generated = True
                 st.rerun()
 
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 # ROTEAMENTO
-# -----------------------------------------------------------------------------
+# -------------------------------------------------------------------
 if not st.session_state.auth:
     do_login()
 else:
     main_app()
+
+
+
+
+  
