@@ -112,6 +112,157 @@ if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
 # -------------------------------------------------------------------
+# LOGIN
+# -------------------------------------------------------------------
+ALLOWED_USERS = {
+    "lucas.costa@mkthouse.com.br": "mudar12345",
+    "gabriel.garcia@mkthouse.com.br": "Peter2025!",
+    "daniela.scibor@mkthouse.com.br": "mudar12345",
+    "regiane.paula@mkthouse.com.br": "mudar12345",
+    "pamela.fructuoso@mkthouse.com.br": "mudar12345",
+    "fernanda.sabino@mkthouse.com.br": "mudar12345",
+    "cacia.nogueira@mkthouse.com.br": "mudar12345",
+    "edson.fortaleza@mkthouse.com.br": "mudar12345",
+    "lucas.depaula@mkthouse.com.br": "mudar12345",
+    "janaina.morais@mkthouse.com.br": "mudar12345",
+    "debora.ramos@mkthouse.com.br": "mudar12345",
+}
+ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
+
+def do_login():
+    st.markdown(LOGIN_CSS, unsafe_allow_html=True)
+    st.title("🔒 Acesso Restrito")
+    st.markdown(
+        '<div class="login-hero">Use seu e-mail corporativo. Em caso de dúvidas, contate o BI.</div>',
+        unsafe_allow_html=True
+    )
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+    with st.form("login_form", clear_on_submit=False):
+        email = st.text_input("E-mail", placeholder="seu.email@mkthouse.com.br")
+        pwd = st.text_input("Senha", type="password", placeholder="••••••••")
+        entrar = st.form_submit_button("Entrar")
+    st.markdown('</div>', unsafe_allow_html=True)
+
+    if entrar:
+        email_norm = (email or "").strip().lower()
+        if email_norm in ALLOWED_USERS and pwd == ALLOWED_USERS[email_norm]:
+            st.session_state.auth = True
+            st.session_state.user_email = email_norm
+            st.rerun()
+        else:
+            st.error("Credenciais inválidas.")
+
+if "auth" not in st.session_state:
+    st.session_state.auth = False
+
+# -------------------------------------------------------------------
+# UTILS
+# -------------------------------------------------------------------
+URL_RE = re.compile(r'https?://\S+')
+
+def extrair_links(celula):
+    if pd.isna(celula): return []
+    t = str(celula).replace(",", " ").replace("(", " ").replace(")", " ").replace('"', " ").replace("'", " ")
+    return [u.rstrip(").,") for u in URL_RE.findall(t)]
+
+def redimensionar(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
+    img = ImageOps.exif_transpose(img)
+    if img.mode != "RGB": img = img.convert("RGB")
+    img.thumbnail((max_w, max_h), resample=Image.LANCZOS)
+    return img
+
+def comprimir_jpeg_binsearch(img: Image.Image, limite_kb: int) -> BytesIO:
+    lo, hi, best = 35, 95, None
+    buf = BytesIO(); img.save(buf, "JPEG", quality=75, optimize=True, progressive=True, subsampling=2)
+    if buf.tell()/1024 <= limite_kb: buf.seek(0); return buf
+    best = buf
+    while lo <= hi:
+        mid = (lo+hi)//2
+        buf = BytesIO(); img.save(buf, "JPEG", quality=mid, optimize=True, progressive=True, subsampling=2)
+        if buf.tell()/1024 <= limite_kb: best = buf; lo = mid+1
+        else: hi = mid-1
+    if best is None:
+        best = BytesIO(); img.save(best, "JPEG", quality=35, optimize=True, progressive=True, subsampling=2)
+    best.seek(0); return best
+
+def px_to_inches(px): return Inches(px / 96.0)
+
+def hex_to_rgb(hex_str: str):
+    s = hex_str.strip().lstrip("#")
+    if len(s) == 3: s = "".join([c*2 for c in s])
+    return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+
+def pick_contrast_color(r, g, b):
+    brightness = (r*299 + g*587 + b*114) / 1000
+    return (0,0,0) if brightness > 128 else (255,255,255)
+
+# -------------------------------------------------------------------
+# EFEITOS (sombra, cantos, borda)
+# -------------------------------------------------------------------
+def _hex_to_rgba_tuple(hex_color, alpha=255):
+    s = hex_color.strip().lstrip("#")
+    if len(s) == 3: s = "".join([c*2 for c in s])
+    r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    return (r, g, b, alpha)
+
+def _apply_rounded_corners(img_rgba: Image.Image, radius: int) -> Image.Image:
+    if radius <= 0: return img_rgba
+    w, h = img_rgba.size
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle([0, 0, w, h], radius=radius, fill=255)
+    out = img_rgba.copy(); out.putalpha(mask); return out
+
+def _apply_border_color(img_rgba: Image.Image, border_px: int, border_hex: str, radius: int) -> Image.Image:
+    if border_px <= 0: return img_rgba
+    w, h = img_rgba.size
+    result = Image.new("RGBA", (w + 2*border_px, h + 2*border_px), (0,0,0,0))
+    draw = ImageDraw.Draw(result)
+    outer = [0, 0, result.size[0], result.size[1]]
+    inner = [border_px, border_px, border_px + w, border_px + h]
+    draw.rounded_rectangle(outer, radius=radius+border_px, fill=_hex_to_rgba_tuple(border_hex))
+    hole = Image.new("L", result.size, 255)
+    hole_draw = ImageDraw.Draw(hole)
+    hole_draw.rounded_rectangle(inner, radius=radius, fill=0)
+    result.putalpha(hole)
+    result.alpha_composite(img_rgba, dest=(border_px, border_px))
+    return result
+
+def _apply_drop_shadow(img_rgba: Image.Image, blur: int, offset: int, opacity_pct: int) -> Image.Image:
+    if blur <= 0 and offset <= 0: return img_rgba
+    w, h = img_rgba.size
+    alpha = img_rgba.split()[-1]
+    a = max(0, min(255, int(255 * (opacity_pct/100))))
+    pad = blur + offset + 2
+    canvas = Image.new("RGBA", (w + pad, h + pad), (0,0,0,0))
+    shadow = Image.new("RGBA", (w, h), (0,0,0,a))
+    shadow.putalpha(alpha)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=blur))
+    canvas.alpha_composite(shadow, dest=(offset, offset))
+    canvas.alpha_composite(img_rgba, dest=(0,0))
+    return canvas
+
+def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
+    out = img_rgb.convert("RGBA")
+    if cfg.get("fx_round"):
+        out = _apply_rounded_corners(out, int(cfg.get("fx_round_radius", 20)))
+    if cfg.get("fx_border"):
+        out = _apply_border_color(
+            out,
+            int(cfg.get("fx_border_width", 6)),
+            cfg.get("fx_border_color", "#DDDDDD"),
+            int(cfg.get("fx_round_radius", 20)) if cfg.get("fx_round") else 0
+        )
+    if cfg.get("fx_shadow"):
+        out = _apply_drop_shadow(
+            out,
+            int(cfg.get("fx_shadow_blur", 10)),
+            int(cfg.get("fx_shadow_offset", 8)),
+            int(cfg.get("fx_shadow_opac", 40)),
+        )
+    return out
+
+# -------------------------------------------------------------------
 # DOWNLOAD & PROCESS
 # -------------------------------------------------------------------
 def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
@@ -499,7 +650,6 @@ def reset_app(preserve_login: bool = True):
         st.session_state.user_email = user
         st.session_state.dark_mode = False
     st.rerun()
-
 
 # -------------------------------------------------------------------
 # APP
@@ -897,4 +1047,5 @@ if not st.session_state.auth:
 else:
     main_app()
 
-  
+
+
