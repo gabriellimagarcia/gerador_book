@@ -1186,12 +1186,11 @@ def main_app():
                     W, H = canvas.width, canvas.height
                     title_rgb = pick_contrast_color(*cfg["bg_rgb"])
 
-                    # ===== Limpa faixa superior e redesenha TÍTULO/ENDEREÇO alinhados à direita =====
-                    # (cobrimos a área superior para remover o texto centralizado gerado pela compose_slide_preview)
+                    # ===== Limpa faixa superior e redesenha TÍTULO/ENDEREÇO alinhados à ESQUERDA =====
                     from PIL import ImageDraw, ImageFont
                     draw = ImageDraw.Draw(canvas)
                     top_bar_h = int(110)  # altura segura pra título + endereço
-                    draw.rectangle([0, 0, W, top_bar_h], fill=cfg["bg_rgb"])  # "apaga" o texto central anterior
+                    draw.rectangle([0, 0, W, top_bar_h], fill=cfg["bg_rgb"])  # apaga o texto central
 
                     # fontes
                     try:
@@ -1201,29 +1200,23 @@ def main_app():
                         font_title = ImageFont.load_default()
                         font_addr  = ImageFont.load_default()
 
-                    # cálculo de margens considerando o LOGO (evita sobreposição)
+                    # margem esquerda
                     slide_w_in, slide_h_in = 13.33, 7.5
-                    # margem direita mínima = 0.2" + largura do logo (se houver) + pequeno gap
-                    base_right_margin_in = 0.2
-                    logo_w_in = float(cfg.get("logo_width_in", 1.2)) if cfg.get("logo_bytes") else 0.0
-                    safe_right_in = base_right_margin_in + logo_w_in + 0.1
-                    right_px = int(W * (safe_right_in / slide_w_in))
+                    left_margin_in = 0.3
+                    x_left = int(W * (left_margin_in / slide_w_in))
+                    y_top  = int(H * (0.20 / slide_h_in))
 
-                    # posições
-                    x_right = W - right_px
-                    y_top   = int(H * (0.20 / slide_h_in))  # ~0.2"
-                    # título (alinhado à direita)
-                    draw.text((x_right, y_top), str(loja), fill=title_rgb, font=font_title, anchor="ra")
+                    # título (alinhado à esquerda)
+                    draw.text((x_left, y_top), str(loja), fill=title_rgb, font=font_title, anchor="la")
                     # endereço (logo abaixo)
                     if end:
-                        # mede altura do título para espaçar
                         try:
                             _, _, tw, th = draw.textbbox((0, 0), str(loja), font=font_title)
                             y_addr = y_top + th + 6
                         except Exception:
                             y_addr = y_top + 32
-                        draw.text((x_right, y_addr), str(end), fill=title_rgb, font=font_addr, anchor="ra")
-                    # ===== fim texto alinhado à direita =====
+                        draw.text((x_left, y_addr), str(end), fill=title_rgb, font=font_addr, anchor="la")
+                    # ===== fim texto alinhado à esquerda =====
 
                     # ===== Overlay do LOGO (sup. dir.) =====
                     if cfg.get("logo_bytes"):
@@ -1402,4 +1395,3 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
