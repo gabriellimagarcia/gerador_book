@@ -6,6 +6,7 @@ from io import BytesIO
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
+import numpy as np  # <- para métricas de qualidade
 
 import streamlit as st
 import pandas as pd
@@ -58,7 +59,7 @@ BASE_CSS = """
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
-# --- CSS extra (login mais limpo) ---
+# --- CSS extra (login limpo e objetivo) ---
 LOGIN_CSS = """
 <style>
 .login-hero {
@@ -197,6 +198,50 @@ def pick_contrast_color(r, g, b):
     return (0,0,0) if brightness > 128 else (255,255,255)
 
 # -------------------------------------------------------------------
+# QUALIDADE (métricas e reprovação)
+# -------------------------------------------------------------------
+def _laplacian_var_gray(pil_img: Image.Image) -> float:
+    g = pil_img.convert("L")
+    a = np.asarray(g, dtype=np.float32)
+    H, W = a.shape
+    if H < 3 or W < 3:
+        return 0.0
+    # Laplaciano 3x3 (válido sem bordas)
+    out = (a[0:-2,1:-1] + a[1:-1,0:-2] + a[1:-1,2:] + a[2:,1:-1] - 4*a[1:-1,1:-1])
+    return float(out.var())
+
+def medir_qualidade(img: Image.Image) -> dict:
+    im = ImageOps.exif_transpose(img)
+    w, h = im.size
+    im_small = im.copy()
+    im_small.thumbnail((1024, 1024), Image.LANCZOS)
+    g = im_small.convert("L")
+    arr = np.asarray(g, dtype=np.float32)
+    return {
+        "width": int(w),
+        "height": int(h),
+        "megapixels": float((w*h)/1_000_000.0),
+        "mean_brightness": float(arr.mean()),
+        "std_contrast": float(arr.std()),
+        "blur_score": _laplacian_var_gray(im_small),
+    }
+
+def reprova_por_limites(q: dict,
+                        min_side_px=600,
+                        min_megapixels=0.3,
+                        min_blur=80.0,
+                        min_contrast=25.0,
+                        min_brightness=50.0,
+                        max_brightness=205.0) -> bool:
+    w, h = q["width"], q["height"]
+    if min(w,h) < min_side_px: return True
+    if q["megapixels"] < min_megapixels: return True
+    if q["blur_score"] < min_blur: return True
+    if q["std_contrast"] < min_contrast: return True
+    if q["mean_brightness"] < min_brightness or q["mean_brightness"] > max_brightness: return True
+    return False
+
+# -------------------------------------------------------------------
 # EFEITOS (sombra, cantos, borda)
 # -------------------------------------------------------------------
 def _hex_to_rgba_tuple(hex_color, alpha=255):
@@ -230,10 +275,10 @@ def _apply_border_color(img_rgba: Image.Image, border_px: int, border_hex: str, 
 
 def _apply_drop_shadow(img_rgba: Image.Image, blur: int, offset: int, opacity_pct: int) -> Image.Image:
     if blur <= 0 and offset <= 0: return img_rgba
-    w, h = img_rgba.size
     alpha = img_rgba.split()[-1]
     a = max(0, min(255, int(255 * (opacity_pct/100))))
     pad = blur + offset + 2
+    w, h = img_rgba.size
     canvas = Image.new("RGBA", (w + pad, h + pad), (0,0,0,0))
     shadow = Image.new("RGBA", (w, h), (0,0,0,a))
     shadow.putalpha(alpha)
@@ -263,15 +308,16 @@ def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
     return out
 
 # -------------------------------------------------------------------
-# DOWNLOAD & PROCESS
+# DOWNLOAD & PROCESS (agora retorna 'quality')
 # -------------------------------------------------------------------
 def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
     try:
         r = session.get(url, timeout=timeout, stream=True)
         if r.status_code != 200:
-            return (url, False, None, None)
+            return (url, False, None, None, None)
 
         img = Image.open(BytesIO(r.content))
+        quality = medir_qualidade(img)  # mede qualidade no original
         img = redimensionar(img, max_w, max_h)
 
         need_alpha = False
@@ -285,23 +331,23 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
             buf = BytesIO(); img_rgba.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
                 buf.seek(0); w, h = img_rgba.size
-                return (url, True, buf, (w, h))
+                return (url, True, buf, (w, h), quality)
             pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
             buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
                 buf.seek(0); w, h = img_rgba.size
-                return (url, True, buf, (w, h))
+                return (url, True, buf, (w, h), quality)
             bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
             bg.paste(img_rgba, mask=img_rgba.split()[-1])
             buf = comprimir_jpeg_binsearch(bg, limite_kb)
             w, h = bg.size
-            return (url, True, buf, (w, h))
+            return (url, True, buf, (w, h), quality)
         else:
             buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
             w, h = img.size
-            return (url, True, buf, (w, h))
+            return (url, True, buf, (w, h), quality)
     except Exception:
-        return (url, False, None, None)
+        return (url, False, None, None, None)
 
 # -------------------------------------------------------------------
 # PPT HELPERS
@@ -406,7 +452,8 @@ def gerar_ppt_modelo_capa_final(
             slide = prs.slides.add_slide(blank_layout)
             set_slide_bg(slide, bg_rgb)
 
-            first_url, (_loja, endereco, _buf0, _wh0) = batch[0]
+            # pega endereço do primeiro item (compatível com tuple expandida)
+            first_url, (_loja, endereco, _buf0, _wh0, *_) = batch[0]
             add_title_and_address(slide, loja, endereco, title_rgb,
                                   title_font_name, title_font_size_pt, title_font_bold)
 
@@ -418,7 +465,7 @@ def gerar_ppt_modelo_capa_final(
                                            right_margin_in=signature_right_margin_in)
 
             slots = get_slots(len(batch), prs)
-            for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+            for (url, (_loja, _end, buf, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
     if final_idx is not None and final_idx < len(prs.slides):
@@ -463,7 +510,7 @@ def montar_zip_imagens(items, resultados, excluded_urls: set) -> BytesIO:
         for loja, lista in grupos.items():
             pasta = _sanitize_folder_name(loja) or "Sem Nome"
             contador = 1
-            for _url, (_loja, _end, buf, (w, h)) in lista:
+            for _url, (_loja, _end, buf, (w, h), *_) in lista:
                 jpeg_bytes = _buf_to_jpeg_bytes(buf)
                 arquivo = f"{pasta} - {contador}.jpg"
                 caminho = f"{pasta}/{arquivo}"
@@ -593,7 +640,7 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
         if expanded_groups[loja]:
             cols = st.columns(thumbs_per_row)
             col_idx = 0
-            for (url, (_loja, _end, buf, (w_px, h_px))) in imgs:
+            for (url, (_loja, _end, buf, (w_px, h_px), *rest)) in imgs:
                 with cols[col_idx]:
                     try:
                         buf.seek(0); im = Image.open(buf)
@@ -750,6 +797,16 @@ def main_app():
             max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
             req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
+            st.markdown("---")
+            st.caption("Qualidade automática")
+            st.checkbox("Marcar automaticamente fotos com baixa qualidade", value=False, key="auto_flag_bad")
+            st.number_input("Mín. lado (px)", 200, 2000, 600, 50, key="q_min_side")
+            st.number_input("Mín. megapixels", 0.05, 5.0, 0.3, 0.05, key="q_min_mp")
+            st.number_input("Mín. foco (Laplaciano)", 5.0, 500.0, 80.0, 5.0, key="q_min_blur")
+            st.number_input("Mín. contraste (std)", 5.0, 80.0, 25.0, 1.0, key="q_min_contrast")
+            st.number_input("Brilho mín.", 0.0, 255.0, 50.0, 1.0, key="q_min_b")
+            st.number_input("Brilho máx.", 0.0, 255.0, 205.0, 1.0, key="q_max_b")
+
     # Topo (título / reset / sair)
     top_l, top_m, top_r = st.columns([5,1,1])
     with top_l:
@@ -810,6 +867,7 @@ def main_app():
                         if url.startswith("http"):
                             items.append((loja, endereco, url))
 
+                # remove URLs repetidas
                 seen, uniq = set(), []
                 for loja, endereco, url in items:
                     if url not in seen:
@@ -857,13 +915,31 @@ def main_app():
                     ): (loja, endereco, url) for loja, endereco, url in items}
                     for fut in as_completed(futures):
                         loja, endereco, url = futures[fut]
-                        _url, ok, buf, wh = fut.result()
-                        if ok: resultados[url] = (loja, endereco, buf, wh)
+                        _url, ok, buf, wh, quality = fut.result()
+                        if ok: resultados[url] = (loja, endereco, buf, wh, quality)
                         else: falhas += 1
                         done += 1; prog.progress(int(done * 100 / total))
                         status.write(f"Processadas {done}/{total} imagens...")
 
                 status.write(f"Concluído. Falhas: {falhas}")
+
+                # Marcação automática de baixa qualidade
+                auto_excluded = set()
+                if st.session_state.get("auto_flag_bad", False):
+                    for url, (_loja, _end, _buf, _wh, quality) in resultados.items():
+                        if quality and reprova_por_limites(
+                            quality,
+                            min_side_px=st.session_state["q_min_side"],
+                            min_megapixels=st.session_state["q_min_mp"],
+                            min_blur=st.session_state["q_min_blur"],
+                            min_contrast=st.session_state["q_min_contrast"],
+                            min_brightness=st.session_state["q_min_b"],
+                            max_brightness=st.session_state["q_max_b"],
+                        ):
+                            auto_excluded.add(url)
+                if "excluded_urls" not in st.session_state:
+                    st.session_state.excluded_urls = set()
+                st.session_state.excluded_urls |= auto_excluded
 
                 st.session_state.pipeline = {
                     "items": items, "resultados": resultados, "falhas": falhas,
@@ -885,12 +961,10 @@ def main_app():
                         "thumb_px": st.session_state["thumb_px"],
                         "thumbs_per_row": st.session_state["thumbs_per_row"],
                         "effects": fx_cfg,
-                        "use_template": st.session_state.get("use_template", False),
-                        "template_bytes": None,  # atribuído abaixo se houver upload
+                        "use_template": False,
+                        "template_bytes": None,
                     }
                 }
-                # template opcional
-                # (precisa ser lido dentro do sidebar; se quiser habilitar, mova o uploader pra cima)
                 st.session_state.preview_mode = True
                 st.session_state.generated = False
                 st.session_state.ppt_bytes = None
@@ -962,65 +1036,43 @@ def main_app():
                 items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
                 titulo = (st.session_state.output_filename or "Apresentacao").strip()
 
-                use_template = cfg.get("use_template", False)
-                template_bytes = cfg.get("template_bytes")
+                prs = Presentation()
+                prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
+                blank = prs.slide_layouts[6]
+                title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+                signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
+                                  else (cfg.get("signature_width_in") or 0.6)
 
-                if use_template and template_bytes:
-                    ppt_bytes = gerar_ppt_modelo_capa_final(
-                        template_bytes=template_bytes,
-                        items=items, resultados=resultados, titulo=titulo,
-                        max_per_slide=cfg["max_per_slide"], sort_mode=cfg["sort_mode"],
-                        bg_rgb=cfg["bg_rgb"],
-                        logo_bytes=cfg["logo_bytes"], logo_width_in=cfg["logo_width_in"],
-                        signature_bytes=cfg["signature_bytes"],
-                        signature_width_in=cfg.get("signature_width_in"),
-                        auto_half_signature=cfg.get("auto_half_signature", True),
-                        signature_bottom_margin_in=cfg["signature_bottom_margin_in"],
-                        signature_right_margin_in=cfg["signature_right_margin_in"],
-                        title_font_name=cfg["title_font_name"],
-                        title_font_size_pt=cfg["title_font_size_pt"],
-                        title_font_bold=cfg["title_font_bold"],
-                        excluded_urls=st.session_state.excluded_urls
-                    )
+                groups = OrderedDict()
+                for loja, endereco, url in items:
+                    if url in resultados and url not in st.session_state.excluded_urls:
+                        groups.setdefault(str(loja), []).append((url, resultados[url]))
+
+                if cfg["sort_mode"] == "Nome da loja (A→Z)":
+                    loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
                 else:
-                    prs = Presentation()
-                    prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
-                    blank = prs.slide_layouts[6]
-                    title_rgb = pick_contrast_color(*cfg["bg_rgb"])
-                    signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
-                                      else (cfg.get("signature_width_in") or 0.6)
+                    loja_keys = list(groups.keys())
 
-                    groups = OrderedDict()
-                    for loja, endereco, url in items:
-                        if url in resultados and url not in st.session_state.excluded_urls:
-                            groups.setdefault(str(loja), []).append((url, resultados[url]))
+                for loja in loja_keys:
+                    imgs = groups[loja]
+                    for i in range(0, len(imgs), cfg["max_per_slide"]):
+                        batch = imgs[i:i+cfg["max_per_slide"]]
+                        slide = prs.slides.add_slide(blank)
+                        set_slide_bg(slide, cfg["bg_rgb"])
+                        first_url, (_loja, endereco, _buf0, _wh0, *_) = batch[0]
+                        add_title_and_address(slide, loja, endereco, title_rgb,
+                                              cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"])
+                        if cfg["logo_bytes"]:
+                            add_logo_top_right(slide, prs, cfg["logo_bytes"], cfg["logo_width_in"])
+                        if cfg["signature_bytes"]:
+                            add_signature_bottom_right(slide, prs, cfg["signature_bytes"], signature_width,
+                                                       bottom_margin_in=cfg["signature_bottom_margin_in"],
+                                                       right_margin_in=cfg["signature_right_margin_in"])
+                        slots = get_slots(len(batch), prs)
+                        for (url, (_loja, _end, buf, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                            place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
-                    if cfg["sort_mode"] == "Nome da loja (A→Z)":
-                        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
-                    else:
-                        loja_keys = list(groups.keys())
-
-                    for loja in loja_keys:
-                        imgs = groups[loja]
-                        for i in range(0, len(imgs), cfg["max_per_slide"]):
-                            batch = imgs[i:i+cfg["max_per_slide"]]
-                            slide = prs.slides.add_slide(blank)
-                            set_slide_bg(slide, cfg["bg_rgb"])
-                            first_url, (_loja, endereco, _buf0, _wh0) = batch[0]
-                            add_title_and_address(slide, loja, endereco, title_rgb,
-                                                  cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"])
-                            if cfg["logo_bytes"]:
-                                add_logo_top_right(slide, prs, cfg["logo_bytes"], cfg["logo_width_in"])
-                            if cfg["signature_bytes"]:
-                                add_signature_bottom_right(slide, prs, cfg["signature_bytes"], signature_width,
-                                                           bottom_margin_in=cfg["signature_bottom_margin_in"],
-                                                           right_margin_in=cfg["signature_right_margin_in"])
-                            slots = get_slots(len(batch), prs)
-                            for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
-                                place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
-
-                    out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
-
+                out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
                 st.session_state.ppt_bytes = ppt_bytes
                 st.session_state.generated = True
                 st.rerun()
@@ -1046,6 +1098,5 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
 
 
