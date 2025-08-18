@@ -13,7 +13,6 @@ from PIL import Image, ImageOps, ImageDraw, ImageFilter
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.shapes import PP_PLACEHOLDER, MSO_SHAPE_TYPE
 
 # -----------------------------------------------------------------------------
 # CONFIG GERAL
@@ -270,7 +269,7 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
 
             bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
             bg.paste(img_rgba, mask=img_rgba.split()[-1])
-            buf = comprimir_jpeg_binsearch(bg, limite_kb)
+            buf = comprimir_jpeg_binsearch(bg)
             w, h = bg.size
             return (url, True, buf, (w, h))
         else:
@@ -339,15 +338,16 @@ def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_wid
     top  = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
     slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
 
-# -----------------------------------------------------------------------------
-# GERADOR COM MODELO (apenas CAPA e FINAL)
-# -----------------------------------------------------------------------------
-def _delete_slide(prs, idx):
+# --- mover slide (sem recriar) ---
+def move_slide_to_index(prs, old_index, new_index):
     sldIdLst = prs.slides._sldIdLst
-    slide_id = sldIdLst[idx].rId
-    prs.part.drop_rel(slide_id)
-    del sldIdLst[idx]
+    sld = sldIdLst[old_index]
+    sldIdLst.remove(sld)
+    sldIdLst.insert(new_index, sld)
 
+# -----------------------------------------------------------------------------
+# GERADOR COM MODELO (apenas CAPA e FINAL) — CORRIGIDO
+# -----------------------------------------------------------------------------
 def gerar_ppt_modelo_capa_final(
     template_bytes: bytes,
     items, resultados, titulo,
@@ -360,19 +360,14 @@ def gerar_ppt_modelo_capa_final(
 ):
     """
     Usa um .pptx com **2 slides**:
-      1 = CAPA (preservado)
-      2 = FINAL (capturamos o layout e recriamos ao fim)
-    Gera os slides de conteúdo entre eles usando o grid padrão.
+      [0] = CAPA (fica como está)
+      [1] = FINAL (fica intacto, e no fim é movido para ser o último)
     """
     excluded_urls = excluded_urls or set()
     prs = Presentation(BytesIO(template_bytes))
 
-    # Espera-se 2 slides: 0=capa, 1=final
-    final_layout = None
-    if len(prs.slides) >= 2:
-        final_layout = prs.slides[1].slide_layout
-        _delete_slide(prs, 1)  # remove o final (vamos recriar no fim)
-    # capa (slide 0) permanece intacta
+    # Indices: 0=capa, 1=final (esperado)
+    final_idx = 1 if len(prs.slides) >= 2 else None
 
     blank_layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
 
@@ -391,7 +386,7 @@ def gerar_ppt_modelo_capa_final(
     title_rgb = pick_contrast_color(*bg_rgb)
     signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
 
-    # Conteúdo gerado entre capa e final
+    # Conteúdo (será adicionado DEPOIS do que já existe — ou seja, depois da capa e do final por enquanto)
     for loja in loja_keys:
         imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
@@ -414,9 +409,9 @@ def gerar_ppt_modelo_capa_final(
             for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
-    # Recria o FINAL no fim com o mesmo layout do slide 2 original
-    if final_layout is not None:
-        prs.slides.add_slide(final_layout)
+    # Agora movemos o slide FINAL (que ainda está no índice original) para o FIM
+    if final_idx is not None and final_idx < len(prs.slides):
+        move_slide_to_index(prs, final_idx, len(prs.slides)-1)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
@@ -706,7 +701,7 @@ def main_app():
                         seen.add(url); uniq.append((loja, endereco, url))
                 items = uniq
 
-                # se ordenar por nome de loja já no preview
+                # ordenar na prévia se escolhido
                 if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
                     grouped_tmp = OrderedDict()
                     for loja, end, url in items:
@@ -848,7 +843,7 @@ def main_app():
                         excluded_urls=st.session_state.excluded_urls
                     )
                 else:
-                    # Sem modelo: capa/final não são aplicados; apenas slides de conteúdo
+                    # Sem modelo: gera só conteúdo
                     prs = Presentation()
                     prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
                     blank = prs.slide_layouts[6]
