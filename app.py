@@ -6,7 +6,7 @@ from io import BytesIO
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
-import numpy as np  # <- para métricas de qualidade
+import numpy as np  # métricas e pHash
 
 import streamlit as st
 import pandas as pd
@@ -36,6 +36,7 @@ BASE_CSS = """
 
 .badge { display:inline-block; padding:3px 8px; border-radius:999px; background:#F3F4F6; color:#111; font-size:12px; font-weight:700; }
 .dark .badge { background:#1f2635; color:#eaeaea; }
+.badge.warn { background:#FFF1E6; color:#8A3B00; border:1px solid #FFD7B3; }
 
 .logout-zone .stButton > button {
   background:#E53935 !important; color:#fff !important;
@@ -59,21 +60,22 @@ BASE_CSS = """
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
-# --- CSS extra (login limpo e objetivo) ---
+# --- CSS extra (login sem “quadrado” entre faixa e cartão) ---
 LOGIN_CSS = """
 <style>
+.login-wrap { max-width: 520px; margin: 0 auto; }
 .login-hero {
   background: linear-gradient(90deg, #FF7A00 0%, #FF9944 100%);
-  color:#fff; padding:16px 18px; border-radius:14px; 
-  font-weight:700; margin: 8px 0 18px 0; line-height:1.2;
+  color:#fff; padding:16px 18px; border-radius:14px 14px 0 0;
+  font-weight:700; line-height:1.2; margin: 8px 0 0 0;
 }
 .login-card {
-  border:1px solid #E7E7E7; background:#ffffff;
-  padding:18px; border-radius:14px;
+  border:1px solid #E7E7E7; border-top:none; background:#ffffff;
+  padding:18px; border-radius:0 0 14px 14px; margin:0;
 }
 .stForm .stButton > button {
-  background:#FF7A00 !important; color:#fff !important; 
-  border:none !important; border-radius:10px !important; 
+  background:#FF7A00 !important; color:#fff !important;
+  border:none !important; border-radius:10px !important;
   font-weight:800 !important;
 }
 .stForm .stButton > button:hover { background:#E66E00 !important; }
@@ -133,16 +135,14 @@ ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
 def do_login():
     st.markdown(LOGIN_CSS, unsafe_allow_html=True)
     st.title("🔒 Acesso Restrito")
-    st.markdown(
-        '<div class="login-hero">Use seu e-mail corporativo. Em caso de dúvidas, contate o BI.</div>',
-        unsafe_allow_html=True
-    )
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="login-hero">Use seu e-mail corporativo. Em caso de dúvidas, contate o BI.</div>', unsafe_allow_html=True)
     st.markdown('<div class="login-card">', unsafe_allow_html=True)
     with st.form("login_form", clear_on_submit=False):
         email = st.text_input("E-mail", placeholder="seu.email@mkthouse.com.br")
         pwd = st.text_input("Senha", type="password", placeholder="••••••••")
         entrar = st.form_submit_button("Entrar")
-    st.markdown('</div>', unsafe_allow_html=True)
+    st.markdown('</div></div>', unsafe_allow_html=True)
 
     if entrar:
         email_norm = (email or "").strip().lower()
@@ -206,7 +206,6 @@ def _laplacian_var_gray(pil_img: Image.Image) -> float:
     H, W = a.shape
     if H < 3 or W < 3:
         return 0.0
-    # Laplaciano 3x3 (válido sem bordas)
     out = (a[0:-2,1:-1] + a[1:-1,0:-2] + a[1:-1,2:] + a[2:,1:-1] - 4*a[1:-1,1:-1])
     return float(out.var())
 
@@ -240,6 +239,24 @@ def reprova_por_limites(q: dict,
     if q["std_contrast"] < min_contrast: return True
     if q["mean_brightness"] < min_brightness or q["mean_brightness"] > max_brightness: return True
     return False
+
+# -------------------------------------------------------------------
+# pHash (usaremos dHash horizontal) + distância de Hamming
+# -------------------------------------------------------------------
+def dhash(pil_img: Image.Image, hash_size: int = 8) -> int:
+    """dHash: 64 bits. Redimensiona para (hash_size+1, hash_size), compara vizinhos horizontais."""
+    img = ImageOps.exif_transpose(pil_img).convert("L").resize((hash_size + 1, hash_size), Image.LANCZOS)
+    px = np.asarray(img, dtype=np.int16)
+    diff = px[:, 1:] > px[:, :-1]
+    # transforma matriz booleana (8x8) em inteiro de 64 bits
+    bits = 0
+    for row in diff:
+        for v in row:
+            bits = (bits << 1) | int(v)
+    return int(bits)
+
+def hamming(a: int, b: int) -> int:
+    return (a ^ b).bit_count()
 
 # -------------------------------------------------------------------
 # EFEITOS (sombra, cantos, borda)
@@ -308,16 +325,18 @@ def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
     return out
 
 # -------------------------------------------------------------------
-# DOWNLOAD & PROCESS (agora retorna 'quality')
+# DOWNLOAD & PROCESS (retorna quality + dhash)
 # -------------------------------------------------------------------
 def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
     try:
         r = session.get(url, timeout=timeout, stream=True)
         if r.status_code != 200:
-            return (url, False, None, None, None)
+            return (url, False, None, None, None, None)
 
         img = Image.open(BytesIO(r.content))
-        quality = medir_qualidade(img)  # mede qualidade no original
+        quality = medir_qualidade(img)   # métricas antes do resize
+        phash = dhash(img)               # dHash no original
+
         img = redimensionar(img, max_w, max_h)
 
         need_alpha = False
@@ -331,23 +350,23 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
             buf = BytesIO(); img_rgba.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
                 buf.seek(0); w, h = img_rgba.size
-                return (url, True, buf, (w, h), quality)
+                return (url, True, buf, (w, h), quality, phash)
             pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
             buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
                 buf.seek(0); w, h = img_rgba.size
-                return (url, True, buf, (w, h), quality)
+                return (url, True, buf, (w, h), quality, phash)
             bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
             bg.paste(img_rgba, mask=img_rgba.split()[-1])
             buf = comprimir_jpeg_binsearch(bg, limite_kb)
             w, h = bg.size
-            return (url, True, buf, (w, h), quality)
+            return (url, True, buf, (w, h), quality, phash)
         else:
             buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
             w, h = img.size
-            return (url, True, buf, (w, h), quality)
+            return (url, True, buf, (w, h), quality, phash)
     except Exception:
-        return (url, False, None, None, None)
+        return (url, False, None, None, None, None)
 
 # -------------------------------------------------------------------
 # PPT HELPERS
@@ -451,9 +470,7 @@ def gerar_ppt_modelo_capa_final(
             batch = imgs[i:i+max_per_slide]
             slide = prs.slides.add_slide(blank_layout)
             set_slide_bg(slide, bg_rgb)
-
-            # pega endereço do primeiro item (compatível com tuple expandida)
-            first_url, (_loja, endereco, _buf0, _wh0, *_) = batch[0]
+            first_url, (_loja, endereco, _buf0, _wh0, *_rest) = batch[0]
             add_title_and_address(slide, loja, endereco, title_rgb,
                                   title_font_name, title_font_size_pt, title_font_bold)
 
@@ -520,14 +537,15 @@ def montar_zip_imagens(items, resultados, excluded_urls: set) -> BytesIO:
     return mem_zip
 
 # -------------------------------------------------------------------
-# PREVIEW (UI) — com callbacks em 1 clique
+# PREVIEW (UI)
 # -------------------------------------------------------------------
-def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, border_color: str):
+def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, border_color: str, top_badges_html: str = ""):
     im = image.copy(); im.thumbnail((width_px, width_px))
     buf = BytesIO(); im.save(buf, format="PNG")
     b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
-    style = f"border:{border_px}px solid {border_color};border-radius:10px;display:block;max-width:100%;width:{width_px}px;"
-    return f'<img src="data:image/png;base64,{b64}" style="{style}" />'
+    style = f"position:relative;border:{border_px}px solid {border_color};border-radius:10px;display:block;max-width:100%;width:{width_px}px;"
+    badges = f'<div style="position:absolute; top:6px; left:8px; display:flex; gap:6px;">{top_badges_html}</div>' if top_badges_html else ""
+    return f'<div style="position:relative; display:inline-block;"><img src="data:image/png;base64,{b64}" style="{style}" />{badges}</div>'
 
 def render_steps(current: int):
     labels = ["Upload", "Pré-visualização", "Gerar/Exportar"]
@@ -569,9 +587,12 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
         st.session_state.excluded_urls = set()
     if "expanded_groups" not in st.session_state:
         st.session_state.expanded_groups = {}
+    if "duplicate_of" not in st.session_state:
+        st.session_state.duplicate_of = {}
 
     excluded = st.session_state.excluded_urls
     expanded_groups = st.session_state.expanded_groups
+    duplicate_of = st.session_state.duplicate_of  # url -> url_original
 
     groups = OrderedDict()
     for loja, endereco, url in items:
@@ -651,8 +672,14 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
                     is_excluded = url in excluded
                     border_px = 3 if is_excluded else 1
                     border_color = "#E53935" if is_excluded else "#DDDDDD"
+
+                    # badges no topo (duplicada?)
+                    badges = ""
+                    if url in duplicate_of:
+                        badges += "<span class='badge warn'>Possível duplicada</span>"
+
                     st.markdown('<div class="img-card">', unsafe_allow_html=True)
-                    st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color), unsafe_allow_html=True)
+                    st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color, top_badges_html=badges), unsafe_allow_html=True)
                     key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
                     checked = st.checkbox("Excluir esta foto", key=key, value=is_excluded)
                     if checked: excluded.add(url)
@@ -720,6 +747,7 @@ def main_app():
     if "generated" not in st.session_state: st.session_state.generated = False
     if "ppt_bytes" not in st.session_state: st.session_state.ppt_bytes = None
     if "images_zip_bytes" not in st.session_state: st.session_state.images_zip_bytes = None
+    if "duplicate_of" not in st.session_state: st.session_state.duplicate_of = {}
 
     with st.sidebar:
         st.header("⚙️ Preferências")
@@ -807,6 +835,12 @@ def main_app():
             st.number_input("Brilho mín.", 0.0, 255.0, 50.0, 1.0, key="q_min_b")
             st.number_input("Brilho máx.", 0.0, 255.0, 205.0, 1.0, key="q_max_b")
 
+            st.markdown("---")
+            st.caption("Duplicatas (pHash/dHash)")
+            # ATIVADO POR PADRÃO:
+            st.checkbox("Apontar duplicadas (pHash)", value=True, key="flag_duplicates")
+            st.number_input("Tolerância (Hamming) ≤", 0, 64, 5, 1, key="dup_hamming_thresh")
+
     # Topo (título / reset / sair)
     top_l, top_m, top_r = st.columns([5,1,1])
     with top_l:
@@ -867,7 +901,7 @@ def main_app():
                         if url.startswith("http"):
                             items.append((loja, endereco, url))
 
-                # remove URLs repetidas
+                # remove URLs repetidas (exatamente iguais)
                 seen, uniq = set(), []
                 for loja, endereco, url in items:
                     if url not in seen:
@@ -915,8 +949,8 @@ def main_app():
                     ): (loja, endereco, url) for loja, endereco, url in items}
                     for fut in as_completed(futures):
                         loja, endereco, url = futures[fut]
-                        _url, ok, buf, wh, quality = fut.result()
-                        if ok: resultados[url] = (loja, endereco, buf, wh, quality)
+                        _url, ok, buf, wh, quality, ph = fut.result()
+                        if ok: resultados[url] = (loja, endereco, buf, wh, quality, ph)
                         else: falhas += 1
                         done += 1; prog.progress(int(done * 100 / total))
                         status.write(f"Processadas {done}/{total} imagens...")
@@ -926,7 +960,7 @@ def main_app():
                 # Marcação automática de baixa qualidade
                 auto_excluded = set()
                 if st.session_state.get("auto_flag_bad", False):
-                    for url, (_loja, _end, _buf, _wh, quality) in resultados.items():
+                    for url, (_loja, _end, _buf, _wh, quality, *_rest) in resultados.items():
                         if quality and reprova_por_limites(
                             quality,
                             min_side_px=st.session_state["q_min_side"],
@@ -940,6 +974,31 @@ def main_app():
                 if "excluded_urls" not in st.session_state:
                     st.session_state.excluded_urls = set()
                 st.session_state.excluded_urls |= auto_excluded
+
+                # DEDUPLICAÇÃO (só aponta) — por loja, se ativado
+                duplicate_of = {}
+                if st.session_state.get("flag_duplicates", True):
+                    thresh = int(st.session_state.get("dup_hamming_thresh", 5))
+                    # Organiza por loja na MESMA ordem dos items
+                    per_loja_seen = {}
+                    for loja, endereco, url in items:
+                        if url not in resultados:  # falhou o download
+                            continue
+                        _, _, _, _, _, ph = resultados[url]
+                        if ph is None:
+                            continue
+                        ref_list = per_loja_seen.setdefault(loja, [])
+                        # compara com já vistos dessa loja
+                        found_ref = None
+                        for (ref_url, ref_ph) in ref_list:
+                            if hamming(ph, ref_ph) <= thresh:
+                                found_ref = ref_url
+                                break
+                        if found_ref:
+                            duplicate_of[url] = found_ref
+                        else:
+                            ref_list.append((url, ph))
+                st.session_state.duplicate_of = duplicate_of
 
                 st.session_state.pipeline = {
                     "items": items, "resultados": resultados, "falhas": falhas,
@@ -1059,7 +1118,7 @@ def main_app():
                         batch = imgs[i:i+cfg["max_per_slide"]]
                         slide = prs.slides.add_slide(blank)
                         set_slide_bg(slide, cfg["bg_rgb"])
-                        first_url, (_loja, endereco, _buf0, _wh0, *_) = batch[0]
+                        first_url, (_loja, endereco, _buf0, _wh0, *_rest) = batch[0]
                         add_title_and_address(slide, loja, endereco, title_rgb,
                                               cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"])
                         if cfg["logo_bytes"]:
@@ -1098,5 +1157,6 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
+
 
 
