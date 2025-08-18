@@ -1181,7 +1181,8 @@ def main_app():
                     loja, end, batch = batches[idx]
                     canvas = compose_slide_preview(batch, loja, end, cfg)  # 1280x720
                     with cols[idx]:
-                        st.image(canvas, caption=f"Slide {idx+1} — {loja}", use_container_width=True)
+                        # ✅ CORREÇÃO AQUI: use_column_width (não use_container_width)
+                        st.image(canvas, caption=f"Slide {idx+1} — {loja}", use_column_width=True)
 
         col1, col2, col3 = st.columns([3, 1, 1])
         with col1:
@@ -1314,11 +1315,6 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
-
-
-
-
 
 
 
