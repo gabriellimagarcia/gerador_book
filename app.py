@@ -1,7 +1,7 @@
 # app.py
 import re
-import hashlib
 import base64
+import hashlib
 from io import BytesIO
 from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -13,100 +13,86 @@ from PIL import Image, ImageOps, ImageDraw, ImageFilter
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
+from pptx.enum.shapes import PP_PLACEHOLDER, MSO_SHAPE_TYPE
 
+# -----------------------------------------------------------------------------
+# CONFIG GERAL
+# -----------------------------------------------------------------------------
 st.set_page_config(page_title="Gerador de Book", page_icon="📸", layout="wide")
 
-# ===============================
-# UX / CSS
-# ===============================
+# --- CSS básico (UX) ---
 BASE_CSS = """
 <style>
-.steps {display:flex; gap:8px; align-items:center; margin: 0.25rem 0 0.5rem;}
+.steps {display:flex; gap:8px; align-items:center; margin:.25rem 0 .5rem;}
 .step {padding:6px 10px; border-radius:999px; border:1px solid #E5E7EB; color:#111; background:#fff; font-weight:700; font-size:13px;}
 .step.active {background:#FF7A00; color:#fff; border-color:#FF7A00;}
-.step.sep {opacity:0.5}
+.step.sep {opacity:.5}
 
-.img-card { border:1px solid #DDD; border-radius:10px; padding:10px; transition: all .15s ease;
+.img-card { border:1px solid #DDD; border-radius:10px; padding:10px; transition:all .15s ease;
   background:#fff; display:flex; flex-direction:column; gap:8px; height:100%; }
 .dark .img-card { background:#0f131a; border-color:#232a36; }
-.img-card:hover { box-shadow: 0 8px 20px rgba(0,0,0,0.06); transform: translateY(-2px); }
+.img-card:hover { box-shadow:0 8px 20px rgba(0,0,0,.06); transform:translateY(-2px); }
 
 .badge { display:inline-block; padding:3px 8px; border-radius:999px; background:#F3F4F6; color:#111; font-size:12px; font-weight:700; }
 .dark .badge { background:#1f2635; color:#eaeaea; }
 
 .logout-zone .stButton > button {
-  background: #E53935 !important; color: #fff !important;
-  border: none !important; border-radius: 10px !important;
+  background:#E53935 !important; color:#fff !important;
+  border:none !important; border-radius:10px !important;
 }
-.logout-zone .stButton > button:hover { background: #C62828 !important; color: #fff !important; }
+.logout-zone .stButton > button:hover { background:#C62828 !important; }
 
 .reset-zone .stButton > button {
-  background: #FF9800 !important; color: #fff !important;
-  border: none !important; border-radius: 10px !important;
+  background:#FF9800 !important; color:#fff !important;
+  border:none !important; border-radius:10px !important;
 }
-.reset-zone .stButton > button:hover { background: #F57C00 !important; color: #fff !important; }
+.reset-zone .stButton > button:hover { background:#F57C00 !important; }
 
 .stDownloadButton > button {
-  padding: 18px 26px !important;
-  font-size: 18px !important;
-  font-weight: 800 !important;
-  border-radius: 12px !important;
+  padding:18px 26px !important;
+  font-size:18px !important;
+  font-weight:800 !important;
+  border-radius:12px !important;
 }
-
-body:has(.stApp[data-theme="dark"]) .steps .step { border-color:#1f2635; background:#0e1117; color:#eaeaea; }
-
-.group-head {display:flex; justify-content:space-between; align-items:center; margin-top:0.5rem;}
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
 
-# ===============================
-# Tema
-# ===============================
+# -----------------------------------------------------------------------------
+# TEMA
+# -----------------------------------------------------------------------------
 def apply_theme(dark: bool):
     ORANGE = "#FF7A00"; ORANGE_HOVER = "#E66E00"; BLACK = "#111111"; GRAY_BG = "#f6f6f7"
     if dark:
         palette = f"""
         <style>
-        :root {{
-            --accent: {ORANGE}; --accent-hover: {ORANGE_HOVER};
-            --text: #f5f5f5; --bg: #0e1117; --panel: #11151c;
-        }}
-        .stApp {{ background-color: var(--bg); color: var(--text); }}
-        section[data-testid="stSidebar"] > div {{ background: var(--panel); border-right: 1px solid #1b212c; }}
-        h1,h2,h3,h4,h5,h6 {{ color: var(--text); }}
-        .stButton > button, .stDownloadButton > button {{ background: var(--accent); color: #fff; border-radius:10px; border:none; }}
-        .stButton > button:hover, .stDownloadButton > button:hover {{ background: var(--accent-hover); color:#fff; }}
-        .stProgress > div > div {{ background-color: var(--accent); }}
+        :root {{ --accent:{ORANGE}; --accent-hover:{ORANGE_HOVER}; --text:#f5f5f5; --bg:#0e1117; --panel:#11151c; }}
+        .stApp {{ background-color:var(--bg); color:var(--text); }}
+        section[data-testid="stSidebar"] > div {{ background:var(--panel); border-right:1px solid #1b212c; }}
+        .stButton > button, .stDownloadButton > button {{ background:var(--accent); color:#fff; border-radius:10px; border:none; }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{ background:var(--accent-hover); }}
+        .stProgress > div > div {{ background-color:var(--accent); }}
         </style>
         """
     else:
         palette = f"""
         <style>
-        :root {{
-            --accent: {ORANGE}; --accent-hover: {ORANGE_HOVER};
-            --text: {BLACK}; --bg: #ffffff; --panel: {GRAY_BG};
-        }}
-        .stApp {{ background-color: var(--bg); color: var(--text); }}
-        section[data-testid="stSidebar"] > div {{ background: var(--panel); border-right: 1px solid #ececec; }}
-        h1,h2,h3,h4,h5,h6 {{ color: var(--text); }}
-        .stButton > button, .stDownloadButton > button {{ background: var(--accent); color: #fff; border-radius:10px; border:none; }}
-        .stButton > button:hover, .stDownloadButton > button:hover {{ background: var(--accent-hover); color:#fff; }}
-        .stProgress > div > div {{ background-color: var(--accent); }}
+        :root {{ --accent:{ORANGE}; --accent-hover:{ORANGE_HOVER}; --text:{BLACK}; --bg:#ffffff; --panel:{GRAY_BG}; }}
+        .stApp {{ background-color:var(--bg); color:var(--text); }}
+        section[data-testid="stSidebar"] > div {{ background:var(--panel); border-right:1px solid #ececec; }}
+        .stButton > button, .stDownloadButton > button {{ background:var(--accent); color:#fff; border-radius:10px; border:none; }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{ background:var(--accent-hover); }}
+        .stProgress > div > div {{ background-color:var(--accent); }}
         </style>
         """
     st.markdown(palette, unsafe_allow_html=True)
-    st.write(f"""<script>
-      const root = window.parent.document.querySelector('.stApp');
-      if (root) root.setAttribute('data-theme', '{'dark' if dark else 'light'}');
-    </script>""", unsafe_allow_html=True)
 
 if "dark_mode" not in st.session_state:
     st.session_state.dark_mode = False
 
-# ===============================
-# Login
-# ===============================
+# -----------------------------------------------------------------------------
+# LOGIN
+# -----------------------------------------------------------------------------
 ALLOWED_USERS = {
     "lucas.costa@mkthouse.com.br": "mudar12345",
     "gabriel.garcia@mkthouse.com.br": "Peter2025!",
@@ -124,7 +110,6 @@ ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
 
 def do_login():
     st.title("🔐 Acesso")
-    st.write("Entre para usar o gerador de book.")
     with st.form("login_form", clear_on_submit=False):
         email = st.text_input("E-mail", placeholder="seu.email@mkthouse.com.br")
         pwd = st.text_input("Senha", type="password", placeholder="••••••••")
@@ -134,7 +119,6 @@ def do_login():
         if email_norm in ALLOWED_USERS and pwd == ALLOWED_USERS[email_norm]:
             st.session_state.auth = True
             st.session_state.user_email = email_norm
-            st.toast("Login ok ✅", icon="✅")
             st.rerun()
         else:
             st.error("Credenciais inválidas.")
@@ -142,9 +126,9 @@ def do_login():
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
-# ===============================
-# Utils
-# ===============================
+# -----------------------------------------------------------------------------
+# UTILS
+# -----------------------------------------------------------------------------
 URL_RE = re.compile(r'https?://\S+')
 
 def extrair_links(celula):
@@ -173,6 +157,7 @@ def comprimir_jpeg_binsearch(img: Image.Image, limite_kb: int) -> BytesIO:
     best.seek(0); return best
 
 def px_to_inches(px): return Inches(px / 96.0)
+
 def hex_to_rgb(hex_str: str):
     s = hex_str.strip().lstrip("#")
     if len(s) == 3: s = "".join([c*2 for c in s])
@@ -182,9 +167,9 @@ def pick_contrast_color(r, g, b):
     brightness = (r*299 + g*587 + b*114) / 1000
     return (0,0,0) if brightness > 128 else (255,255,255)
 
-# ===============================
-# EFEITOS (Sombra, Borda arredondada, Borda colorida)
-# ===============================
+# -----------------------------------------------------------------------------
+# EFEITOS (sombra, cantos, borda)
+# -----------------------------------------------------------------------------
 def _hex_to_rgba_tuple(hex_color, alpha=255):
     s = hex_color.strip().lstrip("#")
     if len(s) == 3: s = "".join([c*2 for c in s])
@@ -192,19 +177,15 @@ def _hex_to_rgba_tuple(hex_color, alpha=255):
     return (r, g, b, alpha)
 
 def _apply_rounded_corners(img_rgba: Image.Image, radius: int) -> Image.Image:
-    if radius <= 0:
-        return img_rgba
+    if radius <= 0: return img_rgba
     w, h = img_rgba.size
     mask = Image.new("L", (w, h), 0)
     draw = ImageDraw.Draw(mask)
     draw.rounded_rectangle([0, 0, w, h], radius=radius, fill=255)
-    out = img_rgba.copy()
-    out.putalpha(mask)
-    return out
+    out = img_rgba.copy(); out.putalpha(mask); return out
 
 def _apply_border_color(img_rgba: Image.Image, border_px: int, border_hex: str, radius: int) -> Image.Image:
-    if border_px <= 0:
-        return img_rgba
+    if border_px <= 0: return img_rgba
     w, h = img_rgba.size
     result = Image.new("RGBA", (w + 2*border_px, h + 2*border_px), (0,0,0,0))
     draw = ImageDraw.Draw(result)
@@ -219,12 +200,10 @@ def _apply_border_color(img_rgba: Image.Image, border_px: int, border_hex: str, 
     return result
 
 def _apply_drop_shadow(img_rgba: Image.Image, blur: int, offset: int, opacity_pct: int) -> Image.Image:
-    if blur <= 0 and offset <= 0:
-        return img_rgba
+    if blur <= 0 and offset <= 0: return img_rgba
     w, h = img_rgba.size
     alpha = img_rgba.split()[-1]
     a = max(0, min(255, int(255 * (opacity_pct/100))))
-    # canvas maior para sombra
     pad = blur + offset + 2
     canvas = Image.new("RGBA", (w + pad, h + pad), (0,0,0,0))
     shadow = Image.new("RGBA", (w, h), (0,0,0,a))
@@ -254,9 +233,9 @@ def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
         )
     return out
 
-# ===============================
-# Baixar + Processar (com efeitos)
-# ===============================
+# -----------------------------------------------------------------------------
+# DOWNLOAD & PROCESS
+# -----------------------------------------------------------------------------
 def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
     try:
         r = session.get(url, timeout=timeout, stream=True)
@@ -298,13 +277,12 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
             buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
             w, h = img.size
             return (url, True, buf, (w, h))
-
     except Exception:
         return (url, False, None, None)
 
-# ===============================
-# PPT helpers (padrão)
-# ===============================
+# -----------------------------------------------------------------------------
+# PPT HELPERS
+# -----------------------------------------------------------------------------
 def get_slots(n, prs):
     IMG_TOP = Inches(1.2); CONTENT_W = Inches(11); CONTENT_H = Inches(6); GAP = Inches(0.2)
     start_left = (prs.slide_width - CONTENT_W) / 2
@@ -361,41 +339,72 @@ def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_wid
     top  = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
     slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
 
-def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
-              logo_bytes=None, logo_width_in=1.2,
-              signature_bytes=None, signature_width_in=None, auto_half_signature=True,
-              signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
-              title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
-              excluded_urls=None):
-    excluded_urls = excluded_urls or set()
-    prs = Presentation(); prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
-    blank = prs.slide_layouts[6]
+# -----------------------------------------------------------------------------
+# GERADOR COM MODELO (apenas CAPA e FINAL)
+# -----------------------------------------------------------------------------
+def _delete_slide(prs, idx):
+    sldIdLst = prs.slides._sldIdLst
+    slide_id = sldIdLst[idx].rId
+    prs.part.drop_rel(slide_id)
+    del sldIdLst[idx]
 
+def gerar_ppt_modelo_capa_final(
+    template_bytes: bytes,
+    items, resultados, titulo,
+    max_per_slide, sort_mode, bg_rgb,
+    logo_bytes=None, logo_width_in=1.2,
+    signature_bytes=None, signature_width_in=None, auto_half_signature=True,
+    signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
+    title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
+    excluded_urls=None
+):
+    """
+    Usa um .pptx com **2 slides**:
+      1 = CAPA (preservado)
+      2 = FINAL (capturamos o layout e recriamos ao fim)
+    Gera os slides de conteúdo entre eles usando o grid padrão.
+    """
+    excluded_urls = excluded_urls or set()
+    prs = Presentation(BytesIO(template_bytes))
+
+    # Espera-se 2 slides: 0=capa, 1=final
+    final_layout = None
+    if len(prs.slides) >= 2:
+        final_layout = prs.slides[1].slide_layout
+        _delete_slide(prs, 1)  # remove o final (vamos recriar no fim)
+    # capa (slide 0) permanece intacta
+
+    blank_layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
+
+    # Agrupa imagens por loja
     groups = OrderedDict()
     for loja, endereco, url in items:
         if url in resultados and url not in excluded_urls:
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
+    # Ordenação
     if sort_mode == "Nome da loja (A→Z)":
-        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
     else:
         loja_keys = list(groups.keys())
 
     title_rgb = pick_contrast_color(*bg_rgb)
     signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
 
+    # Conteúdo gerado entre capa e final
     for loja in loja_keys:
         imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
             batch = imgs[i:i+max_per_slide]
-            slide = prs.slides.add_slide(blank)
+            slide = prs.slides.add_slide(blank_layout)
             set_slide_bg(slide, bg_rgb)
 
             first_url, (_loja, endereco, _buf0, _wh0) = batch[0]
             add_title_and_address(slide, loja, endereco, title_rgb,
                                   title_font_name, title_font_size_pt, title_font_bold)
 
-            if logo_bytes: add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
+            if logo_bytes:
+                add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
             if signature_bytes:
                 add_signature_bottom_right(slide, prs, signature_bytes, signature_width,
                                            bottom_margin_in=signature_bottom_margin_in,
@@ -405,112 +414,15 @@ def gerar_ppt(items, resultados, titulo, max_per_slide, sort_mode, bg_rgb,
             for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
-    out = BytesIO(); prs.save(out); out.seek(0); return out
-
-# ===============================
-# PPT helpers (USO DE MODELO .PPTX)
-# ===============================
-def _delete_slide(prs: Presentation, index: int):
-    """Remove um slide por índice (hack suportado pelo python-pptx)."""
-    sldIdLst = prs.slides._sldIdLst  # noqa: protected member
-    slide_id = sldIdLst[index].rId
-    prs.part.drop_rel(slide_id)
-    del sldIdLst[index]
-
-def gerar_ppt_com_modelo(
-    template_bytes: bytes,
-    items, resultados, titulo,
-    max_per_slide, sort_mode,
-    bg_rgb,
-    logo_bytes=None, logo_width_in=1.2,
-    signature_bytes=None, signature_width_in=None, auto_half_signature=True,
-    signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
-    title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
-    excluded_urls=None,
-    cover_idx=0, back_idx=1, content_idx=2, final_idx=3,
-):
-    """
-    Gera um PPT usando um modelo .pptx:
-    - Mantém capa e contracapa (se existirem).
-    - Usa o layout do slide 'content_idx' para gerar todos os slides com fotos.
-    - (Opcional) Adiciona o slide final (via layout do 'final_idx') no fim.
-    Observação: copiar um slide completo não é suportado; usamos os LAYOUTS.
-    """
-    excluded_urls = excluded_urls or set()
-
-    prs = Presentation(BytesIO(template_bytes))
-    num_slides_in_template = len(prs.slides)
-
-    def _safe_idx(i): return i if 0 <= i < num_slides_in_template else None
-    cover_idx  = _safe_idx(cover_idx)
-    back_idx   = _safe_idx(back_idx)
-    content_idx= _safe_idx(content_idx)
-    final_idx  = _safe_idx(final_idx)
-
-    content_layout = None
-    final_layout = None
-    if content_idx is not None:
-        content_layout = prs.slides[content_idx].slide_layout
-    if final_idx is not None and final_idx != content_idx:
-        final_layout = prs.slides[final_idx].slide_layout
-
-    # remove do arquivo o slide de conteúdo/final originais para não ficarem perdidos no meio
-    to_delete = []
-    if final_idx is not None: to_delete.append(final_idx)
-    if content_idx is not None: to_delete.append(content_idx)
-    to_delete = sorted(set(i for i in to_delete if i is not None), reverse=True)
-    for i in to_delete:
-        if i not in (cover_idx, back_idx):
-            _delete_slide(prs, i)
-
-    groups = OrderedDict()
-    for loja, endereco, url in items:
-        if url in resultados and url not in excluded_urls:
-            groups.setdefault(str(loja), []).append((url, resultados[url]))
-
-    if sort_mode == "Nome da loja (A→Z)":
-        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold()))
-    else:
-        loja_keys = list(groups.keys())
-
-    blank_layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
-    title_rgb = pick_contrast_color(*bg_rgb)
-    signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
-
-    def _set_bg_if_needed(slide):
-        # Se quiser forçar cor de fundo específica (em vez da do layout), descomente:
-        # set_slide_bg(slide, bg_rgb)
-        pass
-
-    for loja in loja_keys:
-        imgs = groups[loja]
-        for i in range(0, len(imgs), max_per_slide):
-            batch = imgs[i:i+max_per_slide]
-            slide = prs.slides.add_slide(content_layout or blank_layout)
-            _set_bg_if_needed(slide)
-
-            first_url, (_loja, endereco, _buf0, _wh0) = batch[0]
-            add_title_and_address(slide, loja, endereco, title_rgb,
-                                  title_font_name, title_font_size_pt, title_font_bold)
-
-            if logo_bytes: add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
-            if signature_bytes:
-                add_signature_bottom_right(slide, prs, signature_bytes, signature_width,
-                                           bottom_margin_in=signature_bottom_margin_in,
-                                           right_margin_in=signature_right_margin_in)
-
-            slots = get_slots(len(batch), prs)
-            for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
-                place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
-
+    # Recria o FINAL no fim com o mesmo layout do slide 2 original
     if final_layout is not None:
         prs.slides.add_slide(final_layout)
 
     out = BytesIO(); prs.save(out); out.seek(0); return out
 
-# ===============================
-# Preview helpers
-# ===============================
+# -----------------------------------------------------------------------------
+# PREVIEW (UI)
+# -----------------------------------------------------------------------------
 def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, border_color: str):
     im = image.copy(); im.thumbnail((width_px, width_px))
     buf = BytesIO(); im.save(buf, format="PNG")
@@ -556,22 +468,20 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
     if sort_mode == "Nome da loja (A→Z)":
-        loja_keys = sorted(
-            groups.keys(),
-            key=lambda s: (s is None or str(s).strip() == "", (s or "").strip().casefold())
-        )
+        loja_keys = sorted(groups.keys(),
+                           key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
     else:
         loja_keys = list(groups.keys())
 
     c1, c2, c3, c4 = st.columns([1,1,1,1])
     with c1:
         if st.button("🧹 Limpar todas as exclusões", type="secondary", use_container_width=True):
-            excluded.clear(); st.toast("Exclusões limpas", icon="🧽"); st.rerun()
+            excluded.clear(); st.rerun()
     with c2:
         if st.button("🔁 Inverter seleção", type="secondary", use_container_width=True):
             all_urls = {url for _, v in groups.items() for (url, _) in v}
             st.session_state.excluded_urls = all_urls - excluded
-            st.toast("Seleção invertida", icon="🔁"); st.rerun()
+            st.rerun()
     with c3:
         if st.button("➕ Expandir todas", type="secondary", use_container_width=True):
             for loja in loja_keys: expanded_groups[loja] = True
@@ -595,19 +505,16 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
             </div>""",
             unsafe_allow_html=True
         )
-
         new_state = st.toggle("Manter este grupo visível", value=current_state, key=key_toggle)
         expanded_groups[loja] = bool(new_state)
 
         gc1, gc2 = st.columns([1,1])
         with gc1:
             if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}", use_container_width=True):
-                for url, _ in imgs: excluded.add(url)
-                st.rerun()
+                for url, _ in imgs: excluded.add(url); st.rerun()
         with gc2:
             if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}", use_container_width=True):
-                for url, _ in imgs: excluded.discard(url)
-                st.rerun()
+                for url, _ in imgs: excluded.discard(url); st.rerun()
 
         if expanded_groups[loja]:
             cols = st.columns(thumbs_per_row)
@@ -620,30 +527,22 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
                         st.warning("Não foi possível pré-visualizar esta imagem.")
                         col_idx = (col_idx + 1) % thumbs_per_row
                         continue
-
                     is_excluded = url in excluded
                     border_px = 3 if is_excluded else 1
                     border_color = "#E53935" if is_excluded else "#DDDDDD"
-
                     st.markdown('<div class="img-card">', unsafe_allow_html=True)
-                    st.markdown(
-                        img_to_html_with_border(im, thumb_px, border_px, border_color),
-                        unsafe_allow_html=True
-                    )
-
+                    st.markdown(img_to_html_with_border(im, thumb_px, border_px, border_color), unsafe_allow_html=True)
                     key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
                     checked = st.checkbox("Excluir esta foto", key=key, value=is_excluded)
                     if checked: excluded.add(url)
                     else: excluded.discard(url)
                     st.markdown('</div>', unsafe_allow_html=True)
-
                 col_idx = (col_idx + 1) % thumbs_per_row
-
         st.divider()
 
-# ===============================
-# Reset
-# ===============================
+# -----------------------------------------------------------------------------
+# RESET
+# -----------------------------------------------------------------------------
 def reset_app(preserve_login: bool = True):
     user = st.session_state.get("user_email")
     auth = st.session_state.get("auth", False)
@@ -654,9 +553,9 @@ def reset_app(preserve_login: bool = True):
         st.session_state.dark_mode = False
     st.rerun()
 
-# ===============================
-# App principal
-# ===============================
+# -----------------------------------------------------------------------------
+# APP
+# -----------------------------------------------------------------------------
 def main_app():
     with st.sidebar:
         st.header("⚙️ Preferências")
@@ -664,17 +563,13 @@ def main_app():
         apply_theme(st.session_state.dark_mode)
 
         with st.expander("📄 Planilha & Layout", expanded=True):
-            st.caption("Colunas da planilha (nomes exatos do cabeçalho):")
+            st.caption("Colunas (nomes exatos do cabeçalho):")
             loja_col = st.text_input("🛒 Coluna de LOJA", value="Selecione sua loja", key="loja_col")
             img_col  = st.text_input("🖼️ Coluna de FOTOS", value="Faça o upload das fotos", key="img_col")
-
             use_address = st.checkbox("➕ Incluir endereço abaixo do nome da loja", value=False, key="use_address")
-            address_col = st.text_input("🏠 Coluna de ENDEREÇO (quando ativado)", value="Endereço",
+            address_col = st.text_input("🏠 Coluna de ENDEREÇO", value="Endereço",
                                         key="address_col", disabled=not use_address)
-
-            st.caption("Layout dos slides")
-            max_per_slide = st.selectbox("📐 Fotos por slide (máx.)", [1, 2, 3], index=0, key="max_per_slide")
-
+            max_per_slide = st.selectbox("📐 Fotos por slide (máx.)", [1,2,3], index=0, key="max_per_slide")
             st.caption("Ordenação")
             sort_mode = st.selectbox("🔤 Ordenar lojas por",
                 ["Ordem original do Excel", "Nome da loja (A→Z)"], index=0, key="sort_mode")
@@ -711,53 +606,38 @@ def main_app():
             signature_right_margin_in = st.slider("Margem direita (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_right_margin")
             signature_bottom_margin_in = st.slider("Margem inferior (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_bottom_margin")
 
-        # ===== NOVO: Utilizar modelo (PPTX)
-        with st.expander("📑 Utilizar modelo (PPTX)", expanded=False):
-            use_template = st.toggle("Usar modelo .pptx (capa, contracapa, layout e final)", value=False, key="use_template")
-            if use_template:
-                template_file = st.file_uploader("Modelo (PPTX)", type=["pptx"], key="template_uploader")
-                st.caption("O modelo deve ter pelo menos 3 slides: Capa (0), Contracapa (1), Layout de conteúdo (2). Opcional: Slide final (3).")
-
-                colA, colB = st.columns(2)
-                with colA:
-                    st.number_input("Índice da Capa (0=primeiro)", 0, 20, 0, key="template_cover_idx")
-                    st.number_input("Índice do Layout de Conteúdo", 0, 20, 2, key="template_content_idx")
-                with colB:
-                    st.number_input("Índice da Contracapa", 0, 20, 1, key="template_back_idx")
-                    st.number_input("Índice do Slide Final", 0, 20, 3, key="template_final_idx")
-
-                if "template_bytes" not in st.session_state: st.session_state.template_bytes = None
-                if template_file:
-                    st.session_state.template_bytes = template_file.getvalue()
-            else:
-                st.session_state.template_bytes = None
-
         with st.expander("🎭 Efeitos nas fotos", expanded=False):
-            st.caption("Ative efeitos opcionais. Sombra e cantos arredondados preservam transparência (PNG).")
+            st.caption("Ative efeitos opcionais.")
             fx_shadow = st.checkbox("Sombra projetada", value=False, key="fx_shadow")
-            st.slider("Intensidade da sombra (blur)", 0, 30, 10, 1, key="fx_shadow_blur", disabled=not fx_shadow)
-            st.slider("Deslocamento da sombra (px)", 0, 30, 8, 1, key="fx_shadow_offset", disabled=not fx_shadow)
-            st.slider("Opacidade da sombra (%)", 10, 100, 40, 5, key="fx_shadow_opac", disabled=not fx_shadow)
+            shadow_blur = st.slider("Intensidade da sombra (blur)", 0, 30, 10, 1, key="fx_shadow_blur", disabled=not fx_shadow)
+            shadow_offset = st.slider("Deslocamento da sombra (px)", 0, 30, 8, 1, key="fx_shadow_offset", disabled=not fx_shadow)
+            shadow_opacity = st.slider("Opacidade da sombra (%)", 10, 100, 40, 5, key="fx_shadow_opac", disabled=not fx_shadow)
 
             fx_round = st.checkbox("Borda arredondada", value=False, key="fx_round")
-            st.slider("Raio dos cantos (px)", 0, 60, 20, 2, key="fx_round_radius", disabled=not fx_round)
+            round_radius = st.slider("Raio dos cantos (px)", 0, 60, 20, 2, key="fx_round_radius", disabled=not fx_round)
 
             fx_border = st.checkbox("Borda colorida", value=False, key="fx_border")
-            st.color_picker("Cor da borda", value="#DDDDDD", key="fx_border_color", disabled=not fx_border)
-            st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
+            border_color_hex = st.color_picker("Cor da borda", value="#DDDDDD", key="fx_border_color", disabled=not fx_border)
+            border_width = st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
 
         with st.expander("⚡ Performance & Qualidade", expanded=False):
-            st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
-            st.slider("Miniaturas por linha (pré-visualização)", 2, 8, 4, 1, key="thumbs_per_row")
+            thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
+            thumbs_per_row = st.slider("Miniaturas por linha", 2, 8, 4, 1, key="thumbs_per_row")
             st.caption("Redimensionamento / compressão")
-            st.number_input("Largura máx (px)", 480, 4096, 1280, 10, key="target_w")
-            st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
-            st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10, key="limite_kb")
+            target_w = st.number_input("Largura máx (px)", 480, 4096, 1280, 10, key="target_w")
+            target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
+            limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10, key="limite_kb")
             st.caption("Rede e paralelismo")
-            st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
-            st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
+            max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
+            req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
-    # ===== Topo
+        with st.expander("📑 Modelo (capa + final)", expanded=True):
+            use_template = st.checkbox("Usar modelo (Capa + Final)", value=False, key="use_template")
+            template_file = None
+            if use_template:
+                template_file = st.file_uploader("Suba o PPTX com 2 slides (Capa e Final)", type=["pptx"], key="template_pptx")
+
+    # Topo (título / reset / sair)
     top_l, top_m, top_r = st.columns([5,1,1])
     with top_l:
         current_step = 1
@@ -767,7 +647,7 @@ def main_app():
             current_step = 3
         st.title("📸 Gerador de Book")
         render_steps(current_step)
-        st.caption("Monte um PPT com fotos por loja, com compressão e layout automático.")
+        st.caption("Monte um PPT com fotos por loja (capa e final opcionais via modelo).")
     with top_m:
         st.markdown('<div class="reset-zone">', unsafe_allow_html=True)
         if st.button("Resetar", key="reset_btn", use_container_width=True, type="secondary"):
@@ -779,7 +659,7 @@ def main_app():
             reset_app(preserve_login=False)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # ===== Estados
+    # Estados
     if "pipeline" not in st.session_state: st.session_state.pipeline = {}
     if "excluded_urls" not in st.session_state: st.session_state.excluded_urls = set()
     if "preview_mode" not in st.session_state: st.session_state.preview_mode = False
@@ -788,7 +668,7 @@ def main_app():
     if "generated" not in st.session_state: st.session_state.generated = False
     if "ppt_bytes" not in st.session_state: st.session_state.ppt_bytes = None
 
-    # ===== 1) Upload
+    # 1) Upload
     with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
         up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload")
         btn_preview = st.button("🔎 Pré-visualizar", key="btn_preview", use_container_width=True)
@@ -819,12 +699,14 @@ def main_app():
                         if url.startswith("http"):
                             items.append((loja, endereco, url))
 
+                # remove URLs duplicadas
                 seen, uniq = set(), []
                 for loja, endereco, url in items:
                     if url not in seen:
                         seen.add(url); uniq.append((loja, endereco, url))
                 items = uniq
 
+                # se ordenar por nome de loja já no preview
                 if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
                     grouped_tmp = OrderedDict()
                     for loja, end, url in items:
@@ -843,7 +725,6 @@ def main_app():
                 session.mount("http://", adapter); session.mount("https://", adapter)
                 session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
 
-                # efeitos cfg
                 fx_cfg = {
                     "fx_shadow": st.session_state.get("fx_shadow", False),
                     "fx_shadow_blur": st.session_state.get("fx_shadow_blur", 10),
@@ -874,17 +755,6 @@ def main_app():
                         status.write(f"Processadas {done}/{total} imagens...")
 
                 status.write(f"Concluído. Falhas: {falhas}")
-                st.toast("Pré-visualização pronta ✅", icon="✅")
-
-                # guarda config de template no estado
-                template_cfg = {
-                    "use_template": st.session_state.get("use_template", False),
-                    "template_bytes": st.session_state.get("template_bytes"),
-                    "cover_idx": st.session_state.get("template_cover_idx", 0),
-                    "back_idx": st.session_state.get("template_back_idx", 1),
-                    "content_idx": st.session_state.get("template_content_idx", 2),
-                    "final_idx": st.session_state.get("template_final_idx", 3),
-                }
 
                 st.session_state.pipeline = {
                     "items": items, "resultados": resultados, "falhas": falhas,
@@ -899,13 +769,15 @@ def main_app():
                         "logo_width_in": st.session_state["logo_width_in"],
                         "signature_bytes": st.session_state.signature_bytes,
                         "auto_half_signature": st.session_state.get("auto_half_signature", True),
-                        "signature_width_in": st.session_state.get("signature_width_in", (st.session_state["logo_width_in"]/2.0)),
+                        "signature_width_in": st.session_state.get("signature_width_in",
+                                                                   (st.session_state["logo_width_in"]/2.0)),
                         "signature_right_margin_in": st.session_state.get("sig_right_margin", 0.20),
                         "signature_bottom_margin_in": st.session_state.get("sig_bottom_margin", 0.20),
                         "thumb_px": st.session_state["thumb_px"],
                         "thumbs_per_row": st.session_state["thumbs_per_row"],
                         "effects": fx_cfg,
-                        "template": template_cfg,
+                        "use_template": st.session_state.get("use_template", False),
+                        "template_bytes": template_file.getvalue() if (st.session_state.get("use_template") and template_file) else None,
                     }
                 }
                 st.session_state.preview_mode = True
@@ -913,7 +785,7 @@ def main_app():
                 st.session_state.ppt_bytes = None
                 st.rerun()
 
-    # ===== 2) Pré-visualização
+    # 2) Pré-visualização
     with st.expander("2. Pré-visualização", expanded=st.session_state.preview_mode):
         if st.session_state.preview_mode and st.session_state.pipeline:
             p = st.session_state.pipeline
@@ -926,7 +798,7 @@ def main_app():
             )
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT, depois use a etapa 3.")
 
-    # ===== 3) Gerar PPT
+    # 3) Gerar PPT
     with st.expander("3. Gerar PPT", expanded=st.session_state.preview_mode):
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -955,44 +827,75 @@ def main_app():
                 items = p["items"]; resultados = p["resultados"]; cfg = p["settings"]
                 titulo = (st.session_state.output_filename or "Apresentacao").strip()
 
-                tpl = cfg.get("template", {}) or {}
-                use_template = tpl.get("use_template") and tpl.get("template_bytes")
+                use_template = cfg.get("use_template", False)
+                template_bytes = cfg.get("template_bytes")
 
-                if use_template:
-                    ppt_bytes = gerar_ppt_com_modelo(
-                        tpl["template_bytes"],
-                        items, resultados, titulo,
-                        cfg["max_per_slide"], cfg["sort_mode"],
-                        cfg["bg_rgb"],
-                        cfg["logo_bytes"], cfg["logo_width_in"],
-                        cfg["signature_bytes"], cfg["signature_width_in"],
-                        cfg["auto_half_signature"],
-                        cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
-                        cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
-                        excluded_urls=st.session_state.excluded_urls,
-                        cover_idx=tpl.get("cover_idx", 0),
-                        back_idx=tpl.get("back_idx", 1),
-                        content_idx=tpl.get("content_idx", 2),
-                        final_idx=tpl.get("final_idx", 3),
-                    )
-                else:
-                    ppt_bytes = gerar_ppt(
-                        items, resultados, titulo,
-                        cfg["max_per_slide"], cfg["sort_mode"], cfg["bg_rgb"],
-                        cfg["logo_bytes"], cfg["logo_width_in"],
-                        cfg["signature_bytes"], cfg["signature_width_in"],
-                        cfg["auto_half_signature"],
-                        cfg["signature_bottom_margin_in"], cfg["signature_right_margin_in"],
-                        cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"],
+                if use_template and template_bytes:
+                    ppt_bytes = gerar_ppt_modelo_capa_final(
+                        template_bytes=template_bytes,
+                        items=items, resultados=resultados, titulo=titulo,
+                        max_per_slide=cfg["max_per_slide"], sort_mode=cfg["sort_mode"],
+                        bg_rgb=cfg["bg_rgb"],
+                        logo_bytes=cfg["logo_bytes"], logo_width_in=cfg["logo_width_in"],
+                        signature_bytes=cfg["signature_bytes"],
+                        signature_width_in=cfg.get("signature_width_in"),
+                        auto_half_signature=cfg.get("auto_half_signature", True),
+                        signature_bottom_margin_in=cfg["signature_bottom_margin_in"],
+                        signature_right_margin_in=cfg["signature_right_margin_in"],
+                        title_font_name=cfg["title_font_name"],
+                        title_font_size_pt=cfg["title_font_size_pt"],
+                        title_font_bold=cfg["title_font_bold"],
                         excluded_urls=st.session_state.excluded_urls
                     )
+                else:
+                    # Sem modelo: capa/final não são aplicados; apenas slides de conteúdo
+                    prs = Presentation()
+                    prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
+                    blank = prs.slide_layouts[6]
+                    title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+                    signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
+                                      else (cfg.get("signature_width_in") or 0.6)
+
+                    groups = OrderedDict()
+                    for loja, endereco, url in items:
+                        if url in resultados and url not in st.session_state.excluded_urls:
+                            groups.setdefault(str(loja), []).append((url, resultados[url]))
+
+                    if cfg["sort_mode"] == "Nome da loja (A→Z)":
+                        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
+                    else:
+                        loja_keys = list(groups.keys())
+
+                    for loja in loja_keys:
+                        imgs = groups[loja]
+                        for i in range(0, len(imgs), cfg["max_per_slide"]):
+                            batch = imgs[i:i+cfg["max_per_slide"]]
+                            slide = prs.slides.add_slide(blank)
+                            set_slide_bg(slide, cfg["bg_rgb"])
+                            first_url, (_loja, endereco, _buf0, _wh0) = batch[0]
+                            add_title_and_address(slide, loja, endereco, title_rgb,
+                                                  cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"])
+                            if cfg["logo_bytes"]:
+                                add_logo_top_right(slide, prs, cfg["logo_bytes"], cfg["logo_width_in"])
+                            if cfg["signature_bytes"]:
+                                add_signature_bottom_right(slide, prs, cfg["signature_bytes"], signature_width,
+                                                           bottom_margin_in=cfg["signature_bottom_margin_in"],
+                                                           right_margin_in=cfg["signature_right_margin_in"])
+                            slots = get_slots(len(batch), prs)
+                            for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                                place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+
+                    out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
 
                 st.session_state.ppt_bytes = ppt_bytes
                 st.session_state.generated = True
                 st.rerun()
 
-# ===== Roteamento
+# -----------------------------------------------------------------------------
+# ROTEAMENTO
+# -----------------------------------------------------------------------------
 if not st.session_state.auth:
     do_login()
 else:
     main_app()
+
