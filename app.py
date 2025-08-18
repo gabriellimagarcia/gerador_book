@@ -1152,7 +1152,7 @@ def main_app():
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT/ZIP. Depois, avance para a etapa 3.")
 
 # ==== 10/10 ========================================================
-    # 3) Gerar / Exportar (com PRÉVIA dos 5 primeiros slides + Recriar Prévia)
+    # 3) Gerar / Exportar (com PRÉVIA dos 3 primeiros slides + Recriar Prévia)
     with st.expander("3. Gerar / Exportar", expanded=st.session_state.preview_mode):
         if st.session_state.preview_mode and st.session_state.pipeline:
             cfg = st.session_state.pipeline["settings"]
@@ -1168,21 +1168,108 @@ def main_app():
             with r2:
                 st.caption("Gera novamente as miniaturas dos slides com base nas exclusões/ordem atuais.")
 
-            # Prévia
+            # Prévia (máx. 3 slides)
             batches = build_batches_for_preview(items, resultados, cfg, st.session_state.excluded_urls)
 
             st.subheader("🔎 Prévia dos primeiros slides")
             if len(batches) == 0:
                 st.warning("Nenhum slide seria gerado com as configurações atuais.")
             else:
-                preview_count = min(5, len(batches))
+                preview_count = min(3, len(batches))  # ✅ agora sempre no máximo 3
                 cols = st.columns(preview_count if preview_count > 0 else 1)
                 for idx in range(preview_count):
                     loja, end, batch = batches[idx]
-                    canvas = compose_slide_preview(batch, loja, end, cfg)  # 1280x720
+
+                    # Base da prévia (fotos no grid padrão)
+                    canvas = compose_slide_preview(batch, loja, end, cfg)  # 1280x720 com fundo cfg["bg_rgb"]
+                    canvas = canvas.convert("RGBA")  # para sobrepor logo/assinatura/textos
+                    W, H = canvas.width, canvas.height
+                    title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+
+                    # ===== Limpa faixa superior e redesenha TÍTULO/ENDEREÇO alinhados à direita =====
+                    # (cobrimos a área superior para remover o texto centralizado gerado pela compose_slide_preview)
+                    from PIL import ImageDraw, ImageFont
+                    draw = ImageDraw.Draw(canvas)
+                    top_bar_h = int(110)  # altura segura pra título + endereço
+                    draw.rectangle([0, 0, W, top_bar_h], fill=cfg["bg_rgb"])  # "apaga" o texto central anterior
+
+                    # fontes
+                    try:
+                        font_title = ImageFont.truetype("arial.ttf", max(12, int(28)))
+                        font_addr  = ImageFont.truetype("arial.ttf", max(10, int(16)))
+                    except Exception:
+                        font_title = ImageFont.load_default()
+                        font_addr  = ImageFont.load_default()
+
+                    # cálculo de margens considerando o LOGO (evita sobreposição)
+                    slide_w_in, slide_h_in = 13.33, 7.5
+                    # margem direita mínima = 0.2" + largura do logo (se houver) + pequeno gap
+                    base_right_margin_in = 0.2
+                    logo_w_in = float(cfg.get("logo_width_in", 1.2)) if cfg.get("logo_bytes") else 0.0
+                    safe_right_in = base_right_margin_in + logo_w_in + 0.1
+                    right_px = int(W * (safe_right_in / slide_w_in))
+
+                    # posições
+                    x_right = W - right_px
+                    y_top   = int(H * (0.20 / slide_h_in))  # ~0.2"
+                    # título (alinhado à direita)
+                    draw.text((x_right, y_top), str(loja), fill=title_rgb, font=font_title, anchor="ra")
+                    # endereço (logo abaixo)
+                    if end:
+                        # mede altura do título para espaçar
+                        try:
+                            _, _, tw, th = draw.textbbox((0, 0), str(loja), font=font_title)
+                            y_addr = y_top + th + 6
+                        except Exception:
+                            y_addr = y_top + 32
+                        draw.text((x_right, y_addr), str(end), fill=title_rgb, font=font_addr, anchor="ra")
+                    # ===== fim texto alinhado à direita =====
+
+                    # ===== Overlay do LOGO (sup. dir.) =====
+                    if cfg.get("logo_bytes"):
+                        try:
+                            from io import BytesIO as _BIO
+                            logo_im = Image.open(_BIO(cfg["logo_bytes"])).convert("RGBA")
+                            target_w_px = max(1, int(W * (cfg["logo_width_in"] / slide_w_in)))
+                            ratio = target_w_px / float(logo_im.width)
+                            target_h_px = max(1, int(logo_im.height * ratio))
+                            logo_im = logo_im.resize((target_w_px, target_h_px), Image.LANCZOS)
+
+                            right_margin_in = 0.5
+                            top_margin_in = 0.2
+                            x = W - int(W * (right_margin_in / slide_w_in)) - target_w_px
+                            y = int(H * (top_margin_in / slide_h_in))
+                            canvas.alpha_composite(logo_im, (max(0, x), max(0, y)))
+                        except Exception:
+                            pass
+
+                    # ===== Overlay da ASSINATURA (inf. dir.) =====
+                    if cfg.get("signature_bytes"):
+                        try:
+                            from io import BytesIO as _BIO
+                            sig_im = Image.open(_BIO(cfg["signature_bytes"])).convert("RGBA")
+
+                            if cfg.get("auto_half_signature", True):
+                                sig_w_in = (cfg.get("logo_width_in", 1.2) / 2.0)
+                            else:
+                                sig_w_in = cfg.get("signature_width_in") or 0.6
+
+                            target_w_px = max(1, int(W * (sig_w_in / slide_w_in)))
+                            ratio = target_w_px / float(sig_im.width)
+                            target_h_px = max(1, int(sig_im.height * ratio))
+                            sig_im = sig_im.resize((target_w_px, target_h_px), Image.LANCZOS)
+
+                            right_margin_in = float(cfg.get("signature_right_margin_in", 0.20))
+                            bottom_margin_in = float(cfg.get("signature_bottom_margin_in", 0.20))
+                            x = W - int(W * (right_margin_in / slide_w_in)) - target_w_px
+                            y = H - int(H * (bottom_margin_in / slide_h_in)) - target_h_px
+                            canvas.alpha_composite(sig_im, (max(0, x), max(0, y)))
+                        except Exception:
+                            pass
+                    # ===== fim overlays =====
+
                     with cols[idx]:
-                        # ✅ CORREÇÃO AQUI: use_column_width (não use_container_width)
-                        st.image(canvas, caption=f"Slide {idx+1} — {loja}", use_column_width=True)
+                        st.image(canvas.convert("RGB"), caption=f"Slide {idx+1} — {loja}", use_column_width=True)
 
         col1, col2, col3 = st.columns([3, 1, 1])
         with col1:
@@ -1315,6 +1402,4 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
-
 
