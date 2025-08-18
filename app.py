@@ -252,13 +252,14 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
             img_rgba = img.convert("RGBA")
 
         if need_alpha:
+            # 1) PNG com alpha
             buf = BytesIO()
             img_rgba.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
                 buf.seek(0)
                 w, h = img_rgba.size
                 return (url, True, buf, (w, h))
-
+            # 2) PNG paletizado
             pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
             buf = BytesIO()
             pal.save(buf, format="PNG", optimize=True)
@@ -266,10 +267,10 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
                 buf.seek(0)
                 w, h = img_rgba.size
                 return (url, True, buf, (w, h))
-
+            # 3) Fallback JPEG fundo branco
             bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
             bg.paste(img_rgba, mask=img_rgba.split()[-1])
-            buf = comprimir_jpeg_binsearch(bg)
+            buf = comprimir_jpeg_binsearch(bg, limite_kb)
             w, h = bg.size
             return (url, True, buf, (w, h))
         else:
@@ -338,7 +339,7 @@ def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_wid
     top  = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
     slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
 
-# --- mover slide (sem recriar) ---
+# mover slide (sem recriar)
 def move_slide_to_index(prs, old_index, new_index):
     sldIdLst = prs.slides._sldIdLst
     sld = sldIdLst[old_index]
@@ -346,7 +347,7 @@ def move_slide_to_index(prs, old_index, new_index):
     sldIdLst.insert(new_index, sld)
 
 # -----------------------------------------------------------------------------
-# GERADOR COM MODELO (apenas CAPA e FINAL) — CORRIGIDO
+# GERADOR COM MODELO (apenas CAPA e FINAL)
 # -----------------------------------------------------------------------------
 def gerar_ppt_modelo_capa_final(
     template_bytes: bytes,
@@ -358,11 +359,6 @@ def gerar_ppt_modelo_capa_final(
     title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
     excluded_urls=None
 ):
-    """
-    Usa um .pptx com **2 slides**:
-      [0] = CAPA (fica como está)
-      [1] = FINAL (fica intacto, e no fim é movido para ser o último)
-    """
     excluded_urls = excluded_urls or set()
     prs = Presentation(BytesIO(template_bytes))
 
@@ -371,13 +367,11 @@ def gerar_ppt_modelo_capa_final(
 
     blank_layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
 
-    # Agrupa imagens por loja
     groups = OrderedDict()
     for loja, endereco, url in items:
         if url in resultados and url not in excluded_urls:
             groups.setdefault(str(loja), []).append((url, resultados[url]))
 
-    # Ordenação
     if sort_mode == "Nome da loja (A→Z)":
         loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
     else:
@@ -386,7 +380,7 @@ def gerar_ppt_modelo_capa_final(
     title_rgb = pick_contrast_color(*bg_rgb)
     signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
 
-    # Conteúdo (será adicionado DEPOIS do que já existe — ou seja, depois da capa e do final por enquanto)
+    # Conteúdo após os slides já existentes (capa & final temporariamente)
     for loja in loja_keys:
         imgs = groups[loja]
         for i in range(0, len(imgs), max_per_slide):
@@ -409,7 +403,7 @@ def gerar_ppt_modelo_capa_final(
             for (url, (_loja, _end, buf, (w_px, h_px))), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
 
-    # Agora movemos o slide FINAL (que ainda está no índice original) para o FIM
+    # Mover o slide FINAL original para o fim
     if final_idx is not None and final_idx < len(prs.slides):
         move_slide_to_index(prs, final_idx, len(prs.slides)-1)
 
@@ -447,6 +441,17 @@ def render_summary(items, resultados, excluded):
         f"<span class='badge'>Excluídas: {len(excluded)}</span>",
         unsafe_allow_html=True
     )
+
+# --- callbacks para botões de grupo ---
+def _cb_select_all(loja, imgs):
+    excluded = st.session_state.excluded_urls
+    for url, _ in imgs:
+        excluded.add(url)
+
+def _cb_clear_group(loja, imgs):
+    excluded = st.session_state.excluded_urls
+    for url, _ in imgs:
+        excluded.discard(url)
 
 def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: int):
     if "excluded_urls" not in st.session_state:
@@ -505,11 +510,21 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
 
         gc1, gc2 = st.columns([1,1])
         with gc1:
-            if st.button(f"Selecionar todas de {loja}", key=f"sel_all_{hash(loja)}", use_container_width=True):
-                for url, _ in imgs: excluded.add(url); st.rerun()
+            st.button(
+                f"Selecionar todas de {loja}",
+                key=f"sel_all_{hash(loja)}",
+                use_container_width=True,
+                on_click=_cb_select_all,
+                args=(loja, imgs)
+            )
         with gc2:
-            if st.button(f"Limpar seleção de {loja}", key=f"clr_sel_{hash(loja)}", use_container_width=True):
-                for url, _ in imgs: excluded.discard(url); st.rerun()
+            st.button(
+                f"Limpar seleção de {loja}",
+                key=f"clr_sel_{hash(loja)}",
+                use_container_width=True,
+                on_click=_cb_clear_group,
+                args=(loja, imgs)
+            )
 
         if expanded_groups[loja]:
             cols = st.columns(thumbs_per_row)
@@ -541,7 +556,20 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
 def reset_app(preserve_login: bool = True):
     user = st.session_state.get("user_email")
     auth = st.session_state.get("auth", False)
+    # limpar tudo
     st.session_state.clear()
+    # reiniciar chaves de uploaders para limpar arquivos
+    st.session_state.xlsx_key = 0
+    st.session_state.template_key = 0
+    st.session_state.logo_key = 0
+    st.session_state.sign_key = 0
+    # estados de expanders padrão (apenas Planilha & Layout aberto)
+    st.session_state.exp_plan = True
+    st.session_state.exp_style = False
+    st.session_state.exp_brand = False
+    st.session_state.exp_fx = False
+    st.session_state.exp_perf = False
+    st.session_state.exp_model = False
     if preserve_login and auth:
         st.session_state.auth = True
         st.session_state.user_email = user
@@ -552,12 +580,23 @@ def reset_app(preserve_login: bool = True):
 # APP
 # -----------------------------------------------------------------------------
 def main_app():
+    # Inicializações de primeira carga
+    for k in ["xlsx_key","template_key","logo_key","sign_key"]:
+        if k not in st.session_state: st.session_state[k] = 0
+    if "exp_plan" not in st.session_state:
+        st.session_state.exp_plan = True
+        st.session_state.exp_style = False
+        st.session_state.exp_brand = False
+        st.session_state.exp_fx = False
+        st.session_state.exp_perf = False
+        st.session_state.exp_model = False
+
     with st.sidebar:
         st.header("⚙️ Preferências")
         st.session_state.dark_mode = st.toggle("Usar tema escuro", value=st.session_state.dark_mode)
         apply_theme(st.session_state.dark_mode)
 
-        with st.expander("📄 Planilha & Layout", expanded=True):
+        with st.expander("📄 Planilha & Layout", expanded=st.session_state.exp_plan):
             st.caption("Colunas (nomes exatos do cabeçalho):")
             loja_col = st.text_input("🛒 Coluna de LOJA", value="Selecione sua loja", key="loja_col")
             img_col  = st.text_input("🖼️ Coluna de FOTOS", value="Faça o upload das fotos", key="img_col")
@@ -569,23 +608,25 @@ def main_app():
             sort_mode = st.selectbox("🔤 Ordenar lojas por",
                 ["Ordem original do Excel", "Nome da loja (A→Z)"], index=0, key="sort_mode")
 
-        with st.expander("🎨 Aparência do slide", expanded=True):
+        with st.expander("🎨 Aparência do slide", expanded=st.session_state.exp_style):
             bg_hex = st.color_picker("🎨 Cor de fundo", value="#FFFFFF", key="bg_hex")
             st.caption("Título do slide")
             title_font_name = st.text_input("Fonte do título", value="Radikal", key="title_font_name")
             title_font_size_pt = st.slider("Tamanho (pt)", 8, 48, 18, 1, key="title_font_size_pt")
             title_font_bold = st.checkbox("Negrito", value=True, key="title_font_bold")
 
-        with st.expander("🏷️ Logo & ✍️ Assinatura", expanded=True):
+        with st.expander("🏷️ Logo & ✍️ Assinatura", expanded=st.session_state.exp_brand):
             st.caption("Logo (canto superior direito)")
-            logo_file = st.file_uploader("Logo (PNG/JPG)", type=["png","jpg","jpeg"], key="logo_uploader")
+            logo_file = st.file_uploader("Logo (PNG/JPG)", type=["png","jpg","jpeg"],
+                                         key=f"logo_uploader_{st.session_state.logo_key}")
             if "logo_bytes" not in st.session_state: st.session_state.logo_bytes = None
             if logo_file is not None: st.session_state.logo_bytes = logo_file.getvalue()
             logo_width_in = st.slider("Largura do LOGO (pol)", 0.5, 3.0, 1.2, 0.1, key="logo_width_in")
 
             st.markdown("---")
             st.caption("Assinatura (canto inferior direito)")
-            signature_file = st.file_uploader("Assinatura (PNG/JPG)", type=["png","jpg","jpeg"], key="signature_uploader")
+            signature_file = st.file_uploader("Assinatura (PNG/JPG)", type=["png","jpg","jpeg"],
+                                              key=f"signature_uploader_{st.session_state.sign_key}")
             if "signature_bytes" not in st.session_state: st.session_state.signature_bytes = None
             if signature_file is not None: st.session_state.signature_bytes = signature_file.getvalue()
 
@@ -601,7 +642,7 @@ def main_app():
             signature_right_margin_in = st.slider("Margem direita (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_right_margin")
             signature_bottom_margin_in = st.slider("Margem inferior (pol)", 0.0, 1.0, 0.20, 0.05, key="sig_bottom_margin")
 
-        with st.expander("🎭 Efeitos nas fotos", expanded=False):
+        with st.expander("🎭 Efeitos nas fotos", expanded=st.session_state.exp_fx):
             st.caption("Ative efeitos opcionais.")
             fx_shadow = st.checkbox("Sombra projetada", value=False, key="fx_shadow")
             shadow_blur = st.slider("Intensidade da sombra (blur)", 0, 30, 10, 1, key="fx_shadow_blur", disabled=not fx_shadow)
@@ -615,7 +656,7 @@ def main_app():
             border_color_hex = st.color_picker("Cor da borda", value="#DDDDDD", key="fx_border_color", disabled=not fx_border)
             border_width = st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
 
-        with st.expander("⚡ Performance & Qualidade", expanded=False):
+        with st.expander("⚡ Performance & Qualidade", expanded=st.session_state.exp_perf):
             thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
             thumbs_per_row = st.slider("Miniaturas por linha", 2, 8, 4, 1, key="thumbs_per_row")
             st.caption("Redimensionamento / compressão")
@@ -626,11 +667,14 @@ def main_app():
             max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
             req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
 
-        with st.expander("📑 Modelo (capa + final)", expanded=True):
+        with st.expander("📑 Modelo (capa + final)", expanded=st.session_state.exp_model):
             use_template = st.checkbox("Usar modelo (Capa + Final)", value=False, key="use_template")
             template_file = None
             if use_template:
-                template_file = st.file_uploader("Suba o PPTX com 2 slides (Capa e Final)", type=["pptx"], key="template_pptx")
+                template_file = st.file_uploader(
+                    "Suba o PPTX com 2 slides (Capa e Final)",
+                    type=["pptx"], key=f"template_pptx_{st.session_state.template_key}"
+                )
 
     # Topo (título / reset / sair)
     top_l, top_m, top_r = st.columns([5,1,1])
@@ -646,6 +690,11 @@ def main_app():
     with top_m:
         st.markdown('<div class="reset-zone">', unsafe_allow_html=True)
         if st.button("Resetar", key="reset_btn", use_container_width=True, type="secondary"):
+            # aumentar chaves dos uploaders -> limpa arquivos
+            st.session_state.xlsx_key += 1
+            st.session_state.template_key += 1
+            st.session_state.logo_key += 1
+            st.session_state.sign_key += 1
             reset_app(preserve_login=True)
         st.markdown('</div>', unsafe_allow_html=True)
     with top_r:
@@ -654,7 +703,7 @@ def main_app():
             reset_app(preserve_login=False)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # Estados
+    # Estados básicos
     if "pipeline" not in st.session_state: st.session_state.pipeline = {}
     if "excluded_urls" not in st.session_state: st.session_state.excluded_urls = set()
     if "preview_mode" not in st.session_state: st.session_state.preview_mode = False
@@ -665,7 +714,8 @@ def main_app():
 
     # 1) Upload
     with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
-        up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"], key="xlsx_upload")
+        up = st.file_uploader("Selecione ou arraste a planilha (.xlsx)", type=["xlsx"],
+                              key=f"xlsx_upload_{st.session_state.xlsx_key}")
         btn_preview = st.button("🔎 Pré-visualizar", key="btn_preview", use_container_width=True)
 
         if btn_preview:
@@ -694,14 +744,12 @@ def main_app():
                         if url.startswith("http"):
                             items.append((loja, endereco, url))
 
-                # remove URLs duplicadas
                 seen, uniq = set(), []
                 for loja, endereco, url in items:
                     if url not in seen:
                         seen.add(url); uniq.append((loja, endereco, url))
                 items = uniq
 
-                # ordenar na prévia se escolhido
                 if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
                     grouped_tmp = OrderedDict()
                     for loja, end, url in items:
@@ -778,6 +826,13 @@ def main_app():
                 st.session_state.preview_mode = True
                 st.session_state.generated = False
                 st.session_state.ppt_bytes = None
+                # a partir daqui, mantenho os expanders recolhidos por padrão
+                st.session_state.exp_plan = False
+                st.session_state.exp_style = False
+                st.session_state.exp_brand = False
+                st.session_state.exp_fx = False
+                st.session_state.exp_perf = False
+                st.session_state.exp_model = False
                 st.rerun()
 
     # 2) Pré-visualização
@@ -893,4 +948,3 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
