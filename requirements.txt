@@ -1,7 +1,16 @@
+# Streamlit / data stack
 streamlit==1.37.0
 pandas==2.2.2
+numpy>=2.0,<2.4
+
+# Excel
 openpyxl==3.1.5
-Pillow==10.4.0
-python-pptx==0.6.23
+xlsxwriter==3.2.5
+
+# Imagem e rede
+Pillow>=10.2,<10.5
 requests==2.32.3
-lxml==5.2.2
+
+# PPTX (⚠️ precisa de lxml 4.x)
+python-pptx==0.6.23
+lxml==4.9.4
