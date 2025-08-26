@@ -1,4 +1,13 @@
 # ==== 1/10 =========================================================
+import logging, sys
+
+logging.basicConfig(
+    level=logging.INFO,  # ou DEBUG quando precisar
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("gerador_book")
+
 import re
 import base64
 import hashlib
