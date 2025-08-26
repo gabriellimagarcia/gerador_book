@@ -1390,9 +1390,29 @@ def main_app():
                 st.rerun()
 
 # -------------------------------------------------------------------
-# ROTEAMENTO
+# ROTEAMENTO (com captura de exceções para exibir o stacktrace na UI)
 # -------------------------------------------------------------------
-if not st.session_state.auth:
-    do_login()
-else:
-    main_app()
+import traceback as _tb
+import streamlit as st as _st
+
+# Mostra detalhes ricos de erro no cliente
+_st.set_option("client.showErrorDetails", True)
+
+try:
+    # Garante chaves básicas no session_state
+    if "auth" not in _st.session_state:
+        _st.session_state.auth = False
+    if "dark_mode" not in _st.session_state:
+        _st.session_state.dark_mode = False
+
+    # Roteamento normal
+    if not _st.session_state.get("auth", False):
+        do_login()
+    else:
+        main_app()
+
+except Exception as e:
+    _st.error("Falha ao iniciar a aplicação. Abaixo o erro detalhado:")
+    _st.exception(e)            # mostra o stacktrace completo na interface
+    print("EXCEPTION:", repr(e)) # aparece também nos logs do Streamlit Cloud
+    _tb.print_exc()
