@@ -14,14 +14,18 @@ import logging, sys  # <<< LOGGING
 import streamlit as st
 import pandas as pd
 import requests
-from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageFont, ImageFile  # 👈 inclui ImageFile
+from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageFont, ImageFile
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
 
-# 👇 tolerância a arquivos de imagem problemáticos
-ImageFile.LOAD_TRUNCATED_IMAGES = True      # aceita imagens “quebradas”
-Image.MAX_IMAGE_PIXELS = 60_000_000         # evita DecompressionBombError para fotos MUITO grandes
+# -------------------------------------------------------------------
+# PIL — tolerância a imagens problemáticas
+# -------------------------------------------------------------------
+# Aceita imagens "truncadas" (parcialmente baixadas/corrompidas) sem quebrar o fluxo.
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+# Evita DecompressionBombError para fotos MUITO grandes (ex.: imagens de celular)
+Image.MAX_IMAGE_PIXELS = 60_000_000
 
 # -------------------------------------------------------------------
 # LOGGING (stdout -> aparece nos logs do Streamlit Cloud)
@@ -54,6 +58,7 @@ BASE_CSS = """
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
+
 
 
 # === PARTE 2/10 =====================================================
@@ -330,6 +335,9 @@ def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
 # === PARTE 6/10 =====================================================
 # PPT helpers + Download & Process
 
+# -------------------------------------------------------------------
+# PPT HELPERS
+# -------------------------------------------------------------------
 def get_slots(n, prs):
     IMG_TOP = Inches(1.2); CONTENT_W = Inches(11); CONTENT_H = Inches(6); GAP = Inches(0.2)
     start_left = (prs.slide_width - CONTENT_W) / 2
@@ -400,70 +408,80 @@ def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_wid
     slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
 
 # -------------------------------------------------------------------
-# DOWNLOAD & PROCESS (robusto; não quebra em links ruins)
+# DOWNLOAD & PROCESS (com hashes SHA1 + dHash + logs)
+# Agora aceita row_idx (linha do Excel) e SEMPRE o retorna no tuple.
 # -------------------------------------------------------------------
-def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int,
-                     timeout: int, fx_cfg: dict = None, row_idx: int | None = None):
+def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None, row_idx: int | None = None):
     """
-    Baixa e processa uma imagem.
-    - Em caso de erro, retorna (url, False, None, None, None, row_idx) sem quebrar o app.
-    - Em caso de sucesso, retorna (url, True, buf, (w,h), quality, sha1_hex, dhash_hex, row_idx).
+    Tenta baixar e processar a imagem.
+    Retorna:
+      (url, ok, buf, (w, h), quality, sha1_hex, dhash_hex, row_idx)
+
+    Em caso de erro/falha:
+      (url, False, None, None, None, row_idx)
     """
     try:
-        # validação inicial
-        if not url or not url.lower().startswith("http"):
-            logger.warning(f"[Linha {row_idx}] URL inválida: {url}")
-            return (url, False, None, None, None, row_idx)
-
+        logger.debug(f"Iniciando download: {url} [linha {row_idx}]")
         r = session.get(url, timeout=timeout, stream=True)
         if r.status_code != 200:
-            logger.warning(f"[Linha {row_idx}] HTTP {r.status_code} em {url}")
+            logger.warning(f"[Linha {row_idx}] HTTP {r.status_code} ao baixar: {url}")
             return (url, False, None, None, None, row_idx)
 
         raw_bytes = r.content
-        try:
-            img = Image.open(BytesIO(raw_bytes))
-            img.load()  # força validar de imediato
-        except Exception as e:
-            logger.warning(f"[Linha {row_idx}] PIL falhou ao abrir {url}: {e}")
-            return (url, False, None, None, None, row_idx)
 
-        # hashes p/ duplicatas
+        # Abre imagem (aceitando imagens truncadas se você ativou ImageFile.LOAD_TRUNCATED_IMAGES na Parte 1)
+        img = Image.open(BytesIO(raw_bytes))
+
+        # Cálculos de hash (conteúdo e perceptual)
         sha1_hex = _sha1_bytes(raw_bytes)
         im_small_for_hash = img.copy()
         im_small_for_hash.thumbnail((256, 256), Image.LANCZOS)
         dhash_hex = _img_dhash(im_small_for_hash)
 
-        # métricas + resize
+        # Métricas de qualidade
         quality = medir_qualidade(img)
+
+        # Redimensiona
         img = redimensionar(img, max_w, max_h)
 
-        # efeitos
-        need_alpha = bool(fx_cfg and (fx_cfg.get("fx_shadow") or fx_cfg.get("fx_round") or fx_cfg.get("fx_border")))
-        img_rgba = apply_effects_pipeline(img.convert("RGB"), fx_cfg) if need_alpha else img.convert("RGBA")
-
-        # compressão
-        if need_alpha:
-            buf = BytesIO(); img_rgba.save(buf, format="PNG", optimize=True)
-            if buf.tell()/1024 > limite_kb:
-                pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
-                buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
-                if buf.tell()/1024 > limite_kb:
-                    bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
-                    bg.paste(img_rgba, mask=img_rgba.split()[-1])
-                    buf = comprimir_jpeg_binsearch(bg, limite_kb)
+        # Aplica efeitos (se necessário)
+        need_alpha = False
+        if fx_cfg and (fx_cfg.get("fx_shadow") or fx_cfg.get("fx_round") or fx_cfg.get("fx_border")):
+            img_rgba = apply_effects_pipeline(img.convert("RGB"), fx_cfg)
+            need_alpha = True
         else:
-            buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
+            img_rgba = img.convert("RGBA")
 
-        buf.seek(0)
-        w, h = img_rgba.size if need_alpha else img.size
-        return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex, row_idx)
+        # Compressão e retorno
+        if need_alpha:
+            # tenta PNG RGBA
+            buf = BytesIO(); img_rgba.save(buf, format="PNG", optimize=True)
+            if buf.tell() / 1024 <= limite_kb:
+                buf.seek(0); w, h = img_rgba.size
+                return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex, row_idx)
+            # PNG paletizado
+            pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
+            buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
+            if buf.tell() / 1024 <= limite_kb:
+                buf.seek(0); w, h = img_rgba.size
+                return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex, row_idx)
+            # fallback: JPEG com fundo branco (sem alpha)
+            bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
+            bg.paste(img_rgba, mask=img_rgba.split()[-1])
+            buf = comprimir_jpeg_binsearch(bg, limite_kb)
+            w, h = bg.size
+            return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex, row_idx)
+        else:
+            # JPEG direto
+            buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
+            w, h = img.size
+            return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex, row_idx)
 
     except requests.exceptions.Timeout:
-        logger.warning(f"[Linha {row_idx}] Timeout em {url}")
+        logger.warning(f"[Linha {row_idx}] Timeout ao baixar: {url}")
         return (url, False, None, None, None, row_idx)
     except Exception as e:
-        logger.warning(f"[Linha {row_idx}] Falha inesperada em {url}: {e}")
+        logger.warning(f"[Linha {row_idx}] Falha ao processar {url}: {e}")
         return (url, False, None, None, None, row_idx)
 
 
