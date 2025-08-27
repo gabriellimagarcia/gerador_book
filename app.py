@@ -959,7 +959,7 @@ def reset_app(preserve_login: bool = True):
     st.rerun()
 
 
-# === PARTE 10/10 ====================================================
+# === PARTE 10/10 =====================================================
 # APP (main_app) + Roteamento final
 
 def main_app():
@@ -983,8 +983,9 @@ def main_app():
     if "ppt_bytes" not in st.session_state: st.session_state.ppt_bytes = None
     if "images_zip_bytes" not in st.session_state: st.session_state.images_zip_bytes = None
     if "preview_bump" not in st.session_state: st.session_state.preview_bump = 0
+    if "failed_urls" not in st.session_state: st.session_state.failed_urls = []
+    if "url_line_map" not in st.session_state: st.session_state.url_line_map = {}
 
-    # === SIDEBAR ====================================================
     with st.sidebar:
         st.header("⚙️ Preferências")
         st.session_state.dark_mode = st.toggle("Usar tema escuro", value=st.session_state.dark_mode)
@@ -996,6 +997,7 @@ def main_app():
             img_col  = st.text_input("🖼️ Coluna de FOTOS", value="Faça o upload das fotos", key="img_col")
             use_address = st.checkbox("➕ Incluir endereço abaixo do nome da loja", value=False, key="use_address")
             address_col = st.text_input("🏠 Coluna de ENDEREÇO", value="Endereço", key="address_col", disabled=not use_address)
+
             max_per_slide = st.selectbox("📐 Fotos por slide (máx.)", ["Automático", 1, 2, 3], index=0, key="max_per_slide")
             sort_mode = st.selectbox("🔤 Ordenar lojas por", ["Ordem original do Excel", "Nome da loja (A→Z)"], index=0, key="sort_mode")
 
@@ -1043,8 +1045,10 @@ def main_app():
             shadow_blur = st.slider("Intensidade da sombra (blur)", 0, 30, 10, 1, key="fx_shadow_blur", disabled=not fx_shadow)
             shadow_offset = st.slider("Deslocamento da sombra (px)", 0, 30, 8, 1, key="fx_shadow_offset", disabled=not fx_shadow)
             shadow_opacity = st.slider("Opacidade da sombra (%)", 10, 100, 40, 5, key="fx_shadow_opac", disabled=not fx_shadow)
+
             fx_round = st.checkbox("Borda arredondada", value=False, key="fx_round")
             round_radius = st.slider("Raio dos cantos (px)", 0, 60, 20, 2, key="fx_round_radius", disabled=not fx_round)
+
             fx_border = st.checkbox("Borda colorida", value=False, key="fx_border")
             border_color_hex = st.color_picker("Cor da borda", value="#DDDDDD", key="fx_border_color", disabled=not fx_border)
             border_width = st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
@@ -1063,7 +1067,7 @@ def main_app():
             min_mp = st.slider("Megapixels mínimos", 0.1, 5.0, 0.8, 0.1, key="min_megapixels")
             min_blur = st.slider("Limiar de nitidez (blur score)", 5, 300, 45, 5, key="min_blur_score")
 
-    # === TOPO =======================================================
+    # Topo
     top_l, top_m, top_r = st.columns([5,1,1])
     with top_l:
         current_step = 1
@@ -1091,10 +1095,9 @@ def main_app():
             reset_app(preserve_login=False)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # === 1) Upload ==================================================
+    # 1) Upload
     with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
-        up = st.file_uploader("Selecione a planilha (.xlsx)", type=["xlsx"],
-                              key=f"xlsx_upload_{st.session_state.xlsx_key}")
+        up = st.file_uploader("Selecione a planilha (.xlsx)", type=["xlsx"], key=f"xlsx_upload_{st.session_state.xlsx_key}")
         btn_preview = st.button("🔎 Pré-visualizar", key="btn_preview", use_container_width=True)
 
         if btn_preview:
@@ -1118,18 +1121,19 @@ def main_app():
                     st.error(f"Colunas não encontradas: {missing}")
                     st.stop()
 
-                # Mapa URL -> linha (Excel começa na linha 2, considerando cabeçalho na linha 1)
                 items = []
-                url_row = {}
-                for excel_row, row in enumerate(df.to_dict(orient="records"), start=2):
-                    loja = str(row.get(loja_col, "")).strip()
-                    endereco = str(row.get(address_col, "")).strip() if use_address else ""
+                url_line_map = {}
+                # enumerate para sabermos a linha (Excel é 1-based; +2 por causa do cabeçalho)
+                for idx, (_, row) in enumerate(df.iterrows()):
+                    linha_excel = idx + 2
+                    loja = str(row[loja_col]).strip()
+                    endereco = str(row[address_col]).strip() if use_address else ""
                     for url in extrair_links(row.get(img_col, "")):
                         if url.startswith("http"):
                             items.append((loja, endereco, url))
-                            url_row.setdefault(url, excel_row)
+                            url_line_map[url] = linha_excel
 
-                # remove URLs repetidas exatas mantendo a 1ª ocorrência
+                # remove URLs repetidas exatas
                 seen, uniq = set(), []
                 for loja, endereco, url in items:
                     if url not in seen:
@@ -1179,6 +1183,7 @@ def main_app():
                 prog = st.progress(0)
                 status = st.empty()
                 resultados, falhas, done = {}, 0, 0
+                failed_urls = []
 
                 with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
                     futures = {
@@ -1186,26 +1191,24 @@ def main_app():
                             baixar_processar, session, url,
                             st.session_state["target_w"], st.session_state["target_h"],
                             st.session_state["limite_kb"], st.session_state["req_timeout"],
-                            fx_cfg, url_row.get(url)  # << envia a linha do Excel
+                            fx_cfg
                         ): (loja, endereco, url)
                         for loja, endereco, url in items
                     }
-
                     for fut in as_completed(futures):
                         loja, endereco, url = futures[fut]
-                        row_idx = url_row.get(url)
                         try:
                             res = fut.result()
                         except Exception as e:
-                            logger.error(f"[Linha {row_idx}] Erro em download {url}: {e}")
-                            res = (url, False, None, None, None, row_idx)
+                            logger.error(f"Erro em download {url}: {e}")
+                            res = (url, False, None, None, None)
 
                         if res[1] is True:
-                            _url, _ok, buf, wh, quality, sha1_hex, dhash_hex, _row = res
+                            _url, _ok, buf, wh, quality, sha1_hex, dhash_hex = res
                             resultados[url] = (loja, endereco, buf, wh, quality, sha1_hex, dhash_hex)
                         else:
                             falhas += 1
-                            st.warning(f"❌ Linha {row_idx}: não consegui baixar/processar {url}")
+                            failed_urls.append(url)
 
                         done += 1
                         prog.progress(int(done * 100 / total))
@@ -1213,6 +1216,7 @@ def main_app():
 
                 status.write(f"Concluído. Falhas: {falhas}")
 
+                # Detecta baixa qualidade e duplicatas
                 low_q, dups = detectar_problemas(
                     resultados,
                     st.session_state["min_megapixels"],
@@ -1221,6 +1225,7 @@ def main_app():
                 st.session_state.low_quality_urls = list(low_q)
                 st.session_state.duplicate_urls = list(dups)
 
+                # Salva pipeline + falhas
                 st.session_state.pipeline = {
                     "items": items, "resultados": resultados, "falhas": falhas,
                     "settings": {
@@ -1251,8 +1256,10 @@ def main_app():
                 st.session_state.generated = False
                 st.session_state.ppt_bytes = None
                 st.session_state.images_zip_bytes = None
+                st.session_state.failed_urls = failed_urls
+                st.session_state.url_line_map = url_line_map
 
-                # Recolhe os expanders após a prévia
+                # recolhe expanders
                 st.session_state.exp_plan = False
                 st.session_state.exp_style = False
                 st.session_state.exp_brand = False
@@ -1261,11 +1268,15 @@ def main_app():
                 st.session_state.exp_model = False
                 st.rerun()
 
-    # === 2) Pré-visualização =======================================
+    # 2) Pré-visualização
     with st.expander("2. Pré-visualização", expanded=st.session_state.preview_mode):
         if st.session_state.preview_mode and st.session_state.pipeline:
             p = st.session_state.pipeline
-            render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
+            render_summary(
+                p["items"], p["resultados"], st.session_state.excluded_urls,
+                st.session_state.get("failed_urls", []),
+                st.session_state.get("url_line_map", {})
+            )
             render_preview(
                 p["items"], p["resultados"],
                 p["settings"]["sort_mode"],
@@ -1274,7 +1285,7 @@ def main_app():
             )
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT/ZIP. Depois, avance para a etapa 3.")
 
-    # === 3) Gerar / Exportar =======================================
+    # 3) Gerar / Exportar
     with st.expander("3. Gerar / Exportar", expanded=st.session_state.get("preview_mode", False)):
         if not (st.session_state.preview_mode and st.session_state.pipeline):
             st.info("Faça a pré-visualização antes de gerar/exportar.")
@@ -1304,6 +1315,8 @@ def main_app():
                     W, H = canvas.width, canvas.height
                     title_rgb = pick_contrast_color(*cfg["bg_rgb"])
 
+                    # Topbar (estético)
+                    from PIL import ImageDraw, ImageFont
                     draw = ImageDraw.Draw(canvas)
                     top_bar_h = int(110)
                     draw.rectangle([0, 0, W, top_bar_h], fill=cfg["bg_rgb"])
@@ -1326,6 +1339,7 @@ def main_app():
                             y_addr = y_top + 32
                         draw.text((x_left, y_addr), str(end), fill=title_rgb, font=font_addr, anchor="la")
 
+                    # Logo (se houver)
                     if cfg.get("logo_bytes"):
                         try:
                             _bio = BytesIO(cfg["logo_bytes"])
@@ -1339,6 +1353,7 @@ def main_app():
                         except Exception:
                             pass
 
+                    # Assinatura (se houver)
                     if cfg.get("signature_bytes"):
                         try:
                             _bio = BytesIO(cfg["signature_bytes"])
@@ -1395,6 +1410,7 @@ def main_app():
                 else:
                     btn_zip = st.button("🖼️ Baixar Imagens", key="btn_zip", use_container_width=True)
 
+            # --- Gerar PPT ---
             if (not st.session_state.get("ppt_bytes")) and ('btn_generate' in locals()) and btn_generate:
                 try:
                     titulo = (st.session_state.output_filename or "Apresentacao").strip()
@@ -1419,6 +1435,7 @@ def main_app():
                             excluded_urls=st.session_state.excluded_urls
                         )
                     else:
+                        # PPT em branco
                         prs = Presentation()
                         prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
                         blank = prs.slide_layouts[6]
@@ -1460,7 +1477,10 @@ def main_app():
                                         right_margin_in=cfg["signature_right_margin_in"])
                                 slots = get_slots(len(batch), prs)
                                 for (url, (_loja, _end, buf, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
-                                    place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+                                    try:
+                                        place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+                                    except Exception as e:
+                                        logger.warning(f"Falha ao inserir imagem no slide ({url}): {e}")
 
                         out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
 
@@ -1471,6 +1491,7 @@ def main_app():
                     logger.exception("Falha ao gerar PPT")
                     st.error(f"Falha ao gerar PPT: {e}")
 
+            # --- Baixar ZIP ---
             if (not st.session_state.get("images_zip_bytes")) and ('btn_zip' in locals()) and btn_zip:
                 try:
                     zip_bytes = montar_zip_imagens(
