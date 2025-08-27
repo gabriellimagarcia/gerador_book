@@ -14,10 +14,14 @@ import logging, sys  # <<< LOGGING
 import streamlit as st
 import pandas as pd
 import requests
-from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageFont
+from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageFont, ImageFile
 from pptx import Presentation
 from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
+
+# 👇 ajustes de robustez do Pillow
+ImageFile.LOAD_TRUNCATED_IMAGES = True      # aceita imagens truncadas
+Image.MAX_IMAGE_PIXELS = 60_000_000         # evita DecompressionBombError para fotos muito grandes
 
 # -------------------------------------------------------------------
 # LOGGING (stdout -> aparece nos logs do Streamlit Cloud)
@@ -50,6 +54,7 @@ BASE_CSS = """
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
+
 
 # === PARTE 2/10 =====================================================
 # Continuação dos estilos (CSS login + tema)
