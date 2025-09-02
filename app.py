@@ -2,6 +2,8 @@
 # Boot, imports, logging e estilos iniciais
 
 import re
+import os
+import gc
 import base64
 import hashlib
 from io import BytesIO
@@ -10,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 import zipfile
 import numpy as np
 import logging, sys  # <<< LOGGING
+import tempfile
 
 import streamlit as st
 import pandas as pd
@@ -22,9 +25,7 @@ from pptx.dml.color import RGBColor
 # -------------------------------------------------------------------
 # PIL — tolerância a imagens problemáticas
 # -------------------------------------------------------------------
-# Aceita imagens "truncadas" (parcialmente baixadas/corrompidas) sem quebrar o fluxo.
 ImageFile.LOAD_TRUNCATED_IMAGES = True
-# Evita DecompressionBombError para fotos MUITO grandes (ex.: imagens de celular)
 Image.MAX_IMAGE_PIXELS = 60_000_000
 
 # -------------------------------------------------------------------
@@ -55,11 +56,12 @@ BASE_CSS = """
   background:#fff; display:flex; flex-direction:column; gap:8px; height:100%; }
 .dark .img-card { background:#0f131a; border-color:#232a36; }
 .img-card:hover { box-shadow:0 8px 20px rgba(0,0,0,.06); transform:translateY(-2px); }
+.group-head {display:flex; justify-content:space-between; align-items:center; padding:.25rem 0;}
+.badge {display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #e5e7eb; font-size:12px;}
+.reset-zone, .logout-zone {margin-top:.5rem;}
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
-
-
 
 # === PARTE 2/10 =====================================================
 # Continuação dos estilos (CSS login + tema)
@@ -163,9 +165,8 @@ def do_login():
 if "auth" not in st.session_state:
     st.session_state.auth = False
 
-
 # === PARTE 4/10 =====================================================
-# Funções utilitárias (utils)
+# Funções utilitárias (utils) + cache em disco
 
 URL_RE = re.compile(r'https?://\S+')
 
@@ -223,7 +224,6 @@ def _sha1_bytes(b: bytes) -> str:
     return hashlib.sha1(b).hexdigest()
 
 def _img_dhash(img: Image.Image, hash_size: int = 8) -> str:
-    """Perceptual hash (dHash) simples, estável e sem libs externas."""
     im = ImageOps.exif_transpose(img).convert("L").resize((hash_size + 1, hash_size), Image.LANCZOS)
     pixels = np.asarray(im, dtype=np.int16)
     diff = pixels[:, 1:] > pixels[:, :-1]
@@ -233,6 +233,21 @@ def _img_dhash(img: Image.Image, hash_size: int = 8) -> str:
             bits = (bits << 1) | int(v)
     return f"{bits:0{hash_size*hash_size//4}x}"
 
+# ---- Cache em disco (/tmp) ----
+TMP_ROOT = tempfile.gettempdir()
+APP_TMP_DIR = os.path.join(TMP_ROOT, "gerador_book_cache")
+os.makedirs(APP_TMP_DIR, exist_ok=True)
+
+def _save_bytes_to_tmp(ext: str, data: bytes) -> str:
+    fd, path = tempfile.mkstemp(prefix="gb_", suffix=f".{ext}", dir=APP_TMP_DIR)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return path
+
+def _open_img_from_path(path: str) -> Image.Image:
+    im = Image.open(path)
+    im.load()
+    return im
 
 # === PARTE 5/10 =====================================================
 # Qualidade da imagem + Efeitos
@@ -331,7 +346,6 @@ def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
         )
     return out
 
-
 # === PARTE 6/10 =====================================================
 # PPT helpers + Download & Process
 
@@ -368,13 +382,12 @@ def set_slide_bg(slide, rgb_tuple):
     fill = slide.background.fill
     fill.solid(); fill.fore_color.rgb = RGBColor(*rgb_tuple)
 
-def place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in):
+def place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in):
     img_w_in = px_to_inches(w_px); img_h_in = px_to_inches(h_px)
     ratio = min(float(max_w_in)/float(img_w_in), float(max_h_in)/float(img_h_in), 1.0)
     final_w = img_w_in * ratio; final_h = img_h_in * ratio
     x = left + (max_w_in - final_w)/2; y = top + (max_h_in - final_h)/2
-    buf.seek(0)
-    slide.shapes.add_picture(buf, x, y, width=final_w, height=final_h)
+    slide.shapes.add_picture(file_path, x, y, width=final_w, height=final_h)
 
 def is_portrait(w_px: int, h_px: int, tol: float = 1.05) -> bool:
     if w_px <= 0 or h_px <= 0:
@@ -408,9 +421,8 @@ def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_wid
     slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
 
 # -------------------------------------------------------------------
-# DOWNLOAD & PROCESS (com hashes SHA1 + dHash + logs)
-#   -> returns de SUCESSO sempre com 7 itens:
-#      (url, True, buf, (w, h), quality, sha1_hex, dhash_hex)
+# DOWNLOAD & PROCESS (salva em /tmp e retorna file_path)
+#   -> SUCCESS: (url, True, file_path, (w,h), quality, sha1_hex, dhash_hex)
 # -------------------------------------------------------------------
 def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
     try:
@@ -421,6 +433,10 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
             return (url, False, None, None, None)
 
         raw_bytes = r.content
+        if len(raw_bytes) > 20 * 1024 * 1024:  # >20MB
+            logger.warning(f"Arquivo muito grande (>20MB): {url}")
+            return (url, False, None, None, None)
+
         img = Image.open(BytesIO(raw_bytes))
 
         # hashes
@@ -440,31 +456,32 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
         else:
             img_rgba = img.convert("RGBA")
 
+        # Salvar em disco
         if need_alpha:
-            # tentar PNG com alpha
             buf = BytesIO(); img_rgba.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
-                buf.seek(0); w, h = img_rgba.size
-                return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex)
+                path = _save_bytes_to_tmp("png", buf.getvalue())
+                w, h = img_rgba.size
+                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
 
-            # PNG paletizado
             pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
             buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
-                buf.seek(0); w, h = img_rgba.size
-                return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex)
+                path = _save_bytes_to_tmp("png", buf.getvalue())
+                w, h = img_rgba.size
+                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
 
-            # fallback JPEG com fundo branco
             bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
             bg.paste(img_rgba, mask=img_rgba.split()[-1])
             buf = comprimir_jpeg_binsearch(bg, limite_kb)
+            path = _save_bytes_to_tmp("jpg", buf.getvalue())
             w, h = bg.size
-            return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex)
+            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
         else:
-            # sem alpha -> JPEG direto
             buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
+            path = _save_bytes_to_tmp("jpg", buf.getvalue())
             w, h = img.size
-            return (url, True, buf, (w, h), quality, sha1_hex, dhash_hex)
+            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
 
     except requests.exceptions.Timeout:
         logger.warning(f"Timeout ao baixar: {url}")
@@ -472,19 +489,24 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
     except Exception as e:
         logger.warning(f"Falha ao processar {url}: {e}")
         return (url, False, None, None, None)
+    finally:
+        try:
+            del img
+        except Exception:
+            pass
+        gc.collect()
 
 
 # === PARTE 7/10 =====================================================
 # ZIP de imagens + PPT com modelo (capa/final)
 
-def _buf_to_jpeg_bytes(img_buf: BytesIO) -> bytes:
+def _path_to_jpeg_bytes(file_path: str) -> bytes:
     try:
-        img_buf.seek(0)
-        im = Image.open(img_buf)
+        im = Image.open(file_path)
         fmt = (im.format or "").upper()
         if fmt in ("JPEG", "JPG"):
-            img_buf.seek(0)
-            return img_buf.read()
+            with open(file_path, "rb") as f:
+                return f.read()
         if im.mode in ("RGBA", "LA"):
             bg = Image.new("RGB", im.size, (255, 255, 255))
             bg.paste(im, mask=im.split()[-1])
@@ -496,9 +518,12 @@ def _buf_to_jpeg_bytes(img_buf: BytesIO) -> bytes:
         out.seek(0)
         return out.read()
     except Exception as e:
-        logger.warning(f"_buf_to_jpeg_bytes fallback: {e}")
-        img_buf.seek(0)
-        return img_buf.read()
+        logger.warning(f"_path_to_jpeg_bytes fallback: {e}")
+        try:
+            with open(file_path, "rb") as f:
+                return f.read()
+        except:
+            return b""
 
 def _sanitize_folder_name(name: str) -> str:
     safe = re.sub(r'[\\/:*?"<>|]+', ' ', str(name or "").strip())
@@ -516,8 +541,8 @@ def montar_zip_imagens(items, resultados, excluded_urls: set) -> BytesIO:
         for loja, lista in grupos.items():
             pasta = _sanitize_folder_name(loja) or "Sem Nome"
             contador = 1
-            for _url, (_loja, _end, buf, (w, h), *_) in lista:
-                jpeg_bytes = _buf_to_jpeg_bytes(buf)
+            for _url, (_loja, _end, file_path, (w, h), *_) in lista:
+                jpeg_bytes = _path_to_jpeg_bytes(file_path)
                 arquivo = f"{pasta} - {contador}.jpg"
                 caminho = f"{pasta}/{arquivo}"
                 try:
@@ -563,7 +588,7 @@ def gerar_ppt_modelo_capa_final(
         i = 0
         while i < len(imgs):
             if max_per_slide == "Automático":
-                _url0, (_loja0, endereco, _buf0, (w0, h0), *_r0) = imgs[i]
+                _url0, (_loja0, endereco, _file0, (w0, h0), *_r0) = imgs[i]
                 per_slide = 3 if is_portrait(w0, h0) else 2
             else:
                 endereco = imgs[i][1][1]
@@ -584,9 +609,9 @@ def gerar_ppt_modelo_capa_final(
                     right_margin_in=signature_right_margin_in
                 )
             slots = get_slots(len(batch), prs)
-            for (url, (_loja, _end, buf, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+            for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
                 try:
-                    place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+                    place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in)
                 except Exception as e:
                     logger.warning(f"Falha ao inserir imagem no slide ({url}): {e}")
 
@@ -601,7 +626,6 @@ def gerar_ppt_modelo_capa_final(
     out.seek(0)
     logger.info("PPT com modelo gerado com sucesso.")
     return out
-
 
 # === PARTE 8/10 =====================================================
 # Prévia de slides — composição PIL + batching
@@ -662,10 +686,9 @@ def compose_slide_preview(batch, loja, endereco, cfg, canvas_w=1280, canvas_h=72
         draw.text(((canvas_w - w_addr)//2, 16 + h_title + 6), endereco, fill=title_rgb, font=font2)
 
     slots = _get_slots_px(len(batch), canvas_w, canvas_h)
-    for (url, (_loja, _end, buf, (w_px, h_px), *rest)), slot in zip(batch, slots):
+    for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), slot in zip(batch, slots):
         try:
-            buf.seek(0)
-            im = Image.open(buf).convert("RGB")
+            im = _open_img_from_path(file_path).convert("RGB")
             _paste_fit(canvas, im, slot)
         except Exception as e:
             logger.warning(f"Falha ao compor imagem na prévia ({url}): {e}")
@@ -696,7 +719,7 @@ def build_batches_for_preview(items, resultados, cfg, excluded_urls):
         i = 0
         while i < len(imgs):
             if cfg["max_per_slide"] == "Automático":
-                _url0, (_loja0, end0, _buf0, (w0, h0), *_r0) = imgs[i]
+                _url0, (_loja0, end0, _file0, (w0, h0), *_r0) = imgs[i]
                 per_slide = 3 if is_portrait(w0, h0) else 2
             else:
                 end0 = imgs[i][1][1]
@@ -705,7 +728,6 @@ def build_batches_for_preview(items, resultados, cfg, excluded_urls):
             i += per_slide
             batches.append((loja, end0, batch))
     return batches
-
 
 # === PARTE 9/10 =====================================================
 # UI de miniaturas + detecção + reset
@@ -858,11 +880,10 @@ def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: 
         if expanded_groups[loja]:
             cols = st.columns(thumbs_per_row)
             col_idx = 0
-            for (url, (_loja, _end, buf, (w_px, h_px), *rest)) in imgs:
+            for (url, (_loja, _end, file_path, (w_px, h_px), *rest)) in imgs:
                 with cols[col_idx]:
                     try:
-                        buf.seek(0)
-                        im = Image.open(buf)
+                        im = _open_img_from_path(file_path)
                     except Exception:
                         st.warning("Não foi possível pré-visualizar esta imagem.")
                         col_idx = (col_idx + 1) % thumbs_per_row
@@ -899,7 +920,7 @@ def detectar_problemas(resultados, min_mp=0.8, min_blur=45):
     low_quality = set()
     by_sha1, by_dhash = {}, {}
     for url, tup in resultados.items():
-        loja, endereco, buf, (w, h), quality, sha1_hex, dhash_hex = tup
+        loja, endereco, file_path, (w, h), quality, sha1_hex, dhash_hex = tup
         if (quality.get("megapixels", 0) < min_mp) or (quality.get("blur_score", 0) < min_blur):
             low_quality.add(url)
         by_sha1.setdefault(sha1_hex, []).append(url)
@@ -946,7 +967,6 @@ def reset_app(preserve_login: bool = True):
         st.session_state.user_email = user
         st.session_state.dark_mode = False
     st.rerun()
-
 
 # === PARTE 10/10 ====================================================
 # APP (main_app) + Roteamento final
@@ -1050,7 +1070,7 @@ def main_app():
             target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
             limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10, key="limite_kb")
             st.caption("Rede e paralelismo")
-            max_workers = st.slider("Trabalhos em paralelo", 2, 32, 12, key="max_workers")
+            max_workers = st.slider("Trabalhos em paralelo", 2, 32, 6, key="max_workers")
             req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
             st.caption("Critérios de qualidade (após o download)")
             min_mp = st.slider("Megapixels mínimos", 0.1, 5.0, 0.8, 0.1, key="min_megapixels")
@@ -1110,7 +1130,6 @@ def main_app():
                     st.error(f"Colunas não encontradas: {missing}")
                     st.stop()
 
-                # Monta items + mapa URL->linha (linha de Excel ~ index+2)
                 items = []
                 url_line_map = {}
                 for ridx, row in df.iterrows():
@@ -1120,7 +1139,6 @@ def main_app():
                     for url in extrair_links(row.get(img_col, "")):
                         if url.startswith("http"):
                             items.append((loja, endereco, url))
-                            # guarda primeira ocorrência da linha
                             url_line_map.setdefault(url, line_no)
 
                 # remove URLs exatas repetidas
@@ -1142,6 +1160,12 @@ def main_app():
                             key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
                         for (end, url) in grouped_tmp[loja]
                     ]
+
+                # Cap opcional de itens para ambientes com pouca RAM
+                MAX_ITENS = 400
+                if len(items) > MAX_ITENS:
+                    st.warning(f"Muitas imagens ({len(items)}). Vou processar apenas as primeiras {MAX_ITENS} nesta rodada.")
+                    items = items[:MAX_ITENS]
 
                 total = len(items)
                 if total == 0:
@@ -1194,21 +1218,19 @@ def main_app():
                             logger.error(f"Erro em download {url}: {e}")
                             res = (url, False, None, None, None)
 
-                        # Desempacotamento resiliente
                         if res and isinstance(res, (list, tuple)) and len(res) >= 2 and res[1] is True:
-                            # esperado: (url, True, buf, (w,h), quality, sha1_hex, dhash_hex)
                             url_key = res[0]
-                            buf     = res[2] if len(res) > 2 else None
+                            file_path = res[2] if len(res) > 2 else None
                             wh      = res[3] if len(res) > 3 else (0, 0)
                             quality = res[4] if len(res) > 4 else {}
                             sha1_hex  = res[5] if len(res) > 5 else ""
                             dhash_hex = res[6] if len(res) > 6 else ""
 
-                            if (buf is None) or (not wh) or (not isinstance(wh, (list, tuple))):
+                            if (not file_path) or (not wh) or (not isinstance(wh, (list, tuple))):
                                 falhas += 1
                                 failed_urls.append(url)
                             else:
-                                resultados[url_key] = (loja, endereco, buf, wh, quality, sha1_hex, dhash_hex)
+                                resultados[url_key] = (loja, endereco, file_path, wh, quality, sha1_hex, dhash_hex)
                         else:
                             falhas += 1
                             failed_urls.append(url)
@@ -1219,11 +1241,9 @@ def main_app():
 
                 status.write(f"Concluído. Falhas: {falhas}")
 
-                # Guarda no estado para mostrar depois
                 st.session_state.failed_urls = failed_urls
                 st.session_state.url_line_map = url_line_map
 
-                # Lista resumida de falhas (se houver)
                 if failed_urls:
                     with st.expander("⚠️ Imagens puladas por erro (clique para ver)", expanded=False):
                         for u in failed_urls[:200]:
@@ -1231,7 +1251,6 @@ def main_app():
                         if len(failed_urls) > 200:
                             st.caption(f"... e mais {len(failed_urls) - 200} itens.")
 
-                # Detecta baixa qualidade e duplicatas
                 low_q, dups = detectar_problemas(
                     resultados,
                     st.session_state["min_megapixels"],
@@ -1240,7 +1259,6 @@ def main_app():
                 st.session_state.low_quality_urls = list(low_q)
                 st.session_state.duplicate_urls = list(dups)
 
-                # Salva pipeline
                 st.session_state.pipeline = {
                     "items": items, "resultados": resultados, "falhas": falhas,
                     "settings": {
@@ -1273,7 +1291,6 @@ def main_app():
                 st.session_state.ppt_bytes = None
                 st.session_state.images_zip_bytes = None
 
-                # recolhe expanders
                 st.session_state.exp_plan = False
                 st.session_state.exp_style = False
                 st.session_state.exp_brand = False
@@ -1287,7 +1304,6 @@ def main_app():
         if st.session_state.preview_mode and st.session_state.pipeline:
             p = st.session_state.pipeline
 
-            # Mostra aviso de falhas (se houver), com linha
             if st.session_state.get("failed_urls"):
                 failed_urls = st.session_state.failed_urls
                 url_line_map = st.session_state.url_line_map
@@ -1316,7 +1332,6 @@ def main_app():
             items = st.session_state.pipeline["items"]
             resultados = st.session_state.pipeline["resultados"]
 
-            # Botão Recriar Prévia
             r1, r2 = st.columns([1, 5])
             with r1:
                 if st.button("🔄 Recriar Prévia", use_container_width=True):
@@ -1325,7 +1340,6 @@ def main_app():
             with r2:
                 st.caption("Gera novamente as miniaturas dos slides com base nas exclusões/ordem atuais.")
 
-            # Prévia (máx. 3 slides)
             batches = build_batches_for_preview(items, resultados, cfg, st.session_state.excluded_urls)
             st.subheader("🔎 Prévia dos primeiros slides")
             if len(batches) == 0:
@@ -1335,13 +1349,11 @@ def main_app():
                 cols = st.columns(preview_count)
                 for idx in range(preview_count):
                     loja, end, batch = batches[idx]
-                    # Base da prévia (fotos no grid padrão)
                     canvas = compose_slide_preview(batch, loja, end, cfg)  # 1280x720 RGB
-                    canvas = canvas.convert("RGBA")  # para sobrepor logo/assinatura/textos
+                    canvas = canvas.convert("RGBA")
                     W, H = canvas.width, canvas.height
                     title_rgb = pick_contrast_color(*cfg["bg_rgb"])
 
-                    # Limpa faixa superior e redesenha título/endereço alinhados à esquerda
                     draw = ImageDraw.Draw(canvas)
                     top_bar_h = int(110)
                     draw.rectangle([0, 0, W, top_bar_h], fill=cfg["bg_rgb"])
@@ -1364,7 +1376,6 @@ def main_app():
                             y_addr = y_top + 32
                         draw.text((x_left, y_addr), str(end), fill=title_rgb, font=font_addr, anchor="la")
 
-                    # Overlay do LOGO (sup. dir.)
                     if cfg.get("logo_bytes"):
                         try:
                             _bio = BytesIO(cfg["logo_bytes"])
@@ -1378,7 +1389,6 @@ def main_app():
                         except Exception:
                             pass
 
-                    # Overlay da ASSINATURA (inf. dir.)
                     if cfg.get("signature_bytes"):
                         try:
                             _bio = BytesIO(cfg["signature_bytes"])
@@ -1401,7 +1411,6 @@ def main_app():
                     with cols[idx]:
                         st.image(canvas.convert("RGB"), caption=f"Slide {idx+1} — {loja}", use_column_width=True)
 
-            # Nome + botões
             col1, col2, col3 = st.columns([3, 1, 1])
             with col1:
                 st.session_state.output_filename = st.text_input(
@@ -1436,7 +1445,7 @@ def main_app():
                 else:
                     btn_zip = st.button("🖼️ Baixar Imagens", key="btn_zip", use_container_width=True)
 
-            # Geração do PPT (com ou sem template)
+            # Geração do PPT
             if (not st.session_state.get("ppt_bytes")) and ('btn_generate' in locals()) and btn_generate:
                 try:
                     titulo = (st.session_state.output_filename or "Apresentacao").strip()
@@ -1483,7 +1492,7 @@ def main_app():
                             imgs = groups[loja]; i = 0
                             while i < len(imgs):
                                 if cfg["max_per_slide"] == "Automático":
-                                    _url0, (_loja0, endereco, _buf0, (w0, h0), *_rest0) = imgs[i]
+                                    _url0, (_loja0, endereco, _file0, (w0, h0), *_rest0) = imgs[i]
                                     per_slide = 3 if is_portrait(w0, h0) else 2
                                 else:
                                     per_slide = int(cfg["max_per_slide"])
@@ -1501,8 +1510,8 @@ def main_app():
                                         bottom_margin_in=cfg["signature_bottom_margin_in"],
                                         right_margin_in=cfg["signature_right_margin_in"])
                                 slots = get_slots(len(batch), prs)
-                                for (url, (_loja, _end, buf, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
-                                    place_picture(slide, buf, w_px, h_px, left, top, max_w_in, max_h_in)
+                                for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                                    place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in)
 
                         out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
 
@@ -1534,4 +1543,8 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
+
+
+
+
 
