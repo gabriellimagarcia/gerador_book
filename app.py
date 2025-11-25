@@ -1162,7 +1162,7 @@ def main_app():
                     ]
 
                 # Cap opcional de itens para ambientes com pouca RAM
-                MAX_ITENS = 400
+                MAX_ITENS = 1000
                 if len(items) > MAX_ITENS:
                     st.warning(f"Muitas imagens ({len(items)}). Vou processar apenas as primeiras {MAX_ITENS} nesta rodada.")
                     items = items[:MAX_ITENS]
