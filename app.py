@@ -59,6 +59,8 @@ BASE_CSS = """
 .group-head {display:flex; justify-content:space-between; align-items:center; padding:.25rem 0;}
 .badge {display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #e5e7eb; font-size:12px;}
 .reset-zone, .logout-zone {margin-top:.5rem;}
+.quick-actions {display: flex; gap: 10px; margin: 10px 0;}
+.quick-actions button {flex: 1;}
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
@@ -969,7 +971,7 @@ def reset_app(preserve_login: bool = True):
     st.rerun()
 
 # === PARTE 10/10 ====================================================
-# APP (main_app) + Roteamento final
+# APP (main_app) + Roteamento final - MODIFICADO
 
 def main_app():
     # Inicializações seguras
@@ -994,6 +996,7 @@ def main_app():
     if "preview_bump" not in st.session_state: st.session_state.preview_bump = 0
     if "failed_urls" not in st.session_state: st.session_state.failed_urls = []
     if "url_line_map" not in st.session_state: st.session_state.url_line_map = {}
+    if "quick_generate" not in st.session_state: st.session_state.quick_generate = False
 
     with st.sidebar:
         st.header("⚙️ Preferências")
@@ -1104,204 +1107,219 @@ def main_app():
             reset_app(preserve_login=False)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 1) Upload
+    # 1) Upload - MODIFICADO: Botões separados
     with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
         up = st.file_uploader("Selecione a planilha (.xlsx)", type=["xlsx"], key=f"xlsx_upload_{st.session_state.xlsx_key}")
-        btn_preview = st.button("🔎 Pré-visualizar", key="btn_preview", use_container_width=True)
+        
+        if up:
+            # BOTÕES SEPARADOS
+            col1, col2 = st.columns(2)
+            with col1:
+                btn_preview = st.button("👁️ Visualização Rápida", key="btn_preview", use_container_width=True, type="secondary")
+            with col2:
+                btn_generate_direct = st.button("🚀 Gerar PPT Direto", key="btn_generate_direct", use_container_width=True, type="primary")
 
-        if btn_preview:
-            if not up:
-                st.warning("Envie a planilha primeiro.")
-            else:
-                try:
-                    df = pd.read_excel(up)
-                except Exception as e:
-                    st.error(f"Não consegui ler o Excel: {e}")
-                    st.stop()
+            if btn_preview or btn_generate_direct:
+                if not up:
+                    st.warning("Envie a planilha primeiro.")
+                else:
+                    try:
+                        df = pd.read_excel(up)
+                    except Exception as e:
+                        st.error(f"Não consegui ler o Excel: {e}")
+                        st.stop()
 
-                loja_col = st.session_state["loja_col"]
-                img_col  = st.session_state["img_col"]
-                use_address = st.session_state.get("use_address", False)
-                address_col = st.session_state.get("address_col", "Endereço")
+                    loja_col = st.session_state["loja_col"]
+                    img_col  = st.session_state["img_col"]
+                    use_address = st.session_state.get("use_address", False)
+                    address_col = st.session_state.get("address_col", "Endereço")
 
-                required_cols = [loja_col, img_col] + ([address_col] if use_address else [])
-                missing = [c for c in required_cols if c not in df.columns]
-                if missing:
-                    st.error(f"Colunas não encontradas: {missing}")
-                    st.stop()
+                    required_cols = [loja_col, img_col] + ([address_col] if use_address else [])
+                    missing = [c for c in required_cols if c not in df.columns]
+                    if missing:
+                        st.error(f"Colunas não encontradas: {missing}")
+                        st.stop()
 
-                items = []
-                url_line_map = {}
-                for ridx, row in df.iterrows():
-                    loja = str(row[loja_col]).strip()
-                    endereco = str(row[address_col]).strip() if use_address else ""
-                    line_no = (int(ridx) + 2) if isinstance(ridx, (int, np.integer)) else "?"
-                    for url in extrair_links(row.get(img_col, "")):
-                        if url.startswith("http"):
-                            items.append((loja, endereco, url))
-                            url_line_map.setdefault(url, line_no)
+                    items = []
+                    url_line_map = {}
+                    for ridx, row in df.iterrows():
+                        loja = str(row[loja_col]).strip()
+                        endereco = str(row[address_col]).strip() if use_address else ""
+                        line_no = (int(ridx) + 2) if isinstance(ridx, (int, np.integer)) else "?"
+                        for url in extrair_links(row.get(img_col, "")):
+                            if url.startswith("http"):
+                                items.append((loja, endereco, url))
+                                url_line_map.setdefault(url, line_no)
 
-                # remove URLs exatas repetidas
-                seen, uniq = set(), []
-                for loja, endereco, url in items:
-                    if url not in seen:
-                        seen.add(url)
-                        uniq.append((loja, endereco, url))
-                items = uniq
+                    # remove URLs exatas repetidas
+                    seen, uniq = set(), []
+                    for loja, endereco, url in items:
+                        if url not in seen:
+                            seen.add(url)
+                            uniq.append((loja, endereco, url))
+                    items = uniq
 
-                # se ordenação por loja
-                if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
-                    grouped_tmp = OrderedDict()
-                    for loja, end, url in items:
-                        grouped_tmp.setdefault(loja, []).append((end, url))
-                    items = [
-                        (loja, end, url)
-                        for loja in sorted(grouped_tmp.keys(),
-                            key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
-                        for (end, url) in grouped_tmp[loja]
-                    ]
+                    # se ordenação por loja
+                    if st.session_state["sort_mode"] == "Nome da loja (A→Z)":
+                        grouped_tmp = OrderedDict()
+                        for loja, end, url in items:
+                            grouped_tmp.setdefault(loja, []).append((end, url))
+                        items = [
+                            (loja, end, url)
+                            for loja in sorted(grouped_tmp.keys(),
+                                key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
+                            for (end, url) in grouped_tmp[loja]
+                        ]
 
-                # Cap opcional de itens para ambientes com pouca RAM
-                MAX_ITENS = 1000
-                if len(items) > MAX_ITENS:
-                    st.warning(f"Muitas imagens ({len(items)}). Vou processar apenas as primeiras {MAX_ITENS} nesta rodada.")
-                    items = items[:MAX_ITENS]
+                    # Cap opcional de itens para ambientes com pouca RAM
+                    MAX_ITENS = 1000
+                    if len(items) > MAX_ITENS:
+                        st.warning(f"Muitas imagens ({len(items)}). Vou processar apenas as primeiras {MAX_ITENS} nesta rodada.")
+                        items = items[:MAX_ITENS]
 
-                total = len(items)
-                if total == 0:
-                    st.warning("Nenhuma URL de imagem encontrada.")
-                    st.stop()
+                    total = len(items)
+                    if total == 0:
+                        st.warning("Nenhuma URL de imagem encontrada.")
+                        st.stop()
 
-                st.info(f"Baixando e processando **{total}** imagem(ns)...")
-                session = requests.Session()
-                adapter = requests.adapters.HTTPAdapter(
-                    pool_connections=st.session_state["max_workers"],
-                    pool_maxsize=st.session_state["max_workers"],
-                    max_retries=2
-                )
-                session.mount("http://", adapter)
-                session.mount("https://", adapter)
-                session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
+                    st.info(f"Baixando e processando **{total}** imagem(ns)...")
+                    session = requests.Session()
+                    adapter = requests.adapters.HTTPAdapter(
+                        pool_connections=st.session_state["max_workers"],
+                        pool_maxsize=st.session_state["max_workers"],
+                        max_retries=2
+                    )
+                    session.mount("http://", adapter)
+                    session.mount("https://", adapter)
+                    session.headers.update({"User-Agent": "Mozilla/5.0 (GeradorBook Streamlit)"})
 
-                fx_cfg = {
-                    "fx_shadow": st.session_state.get("fx_shadow", False),
-                    "fx_shadow_blur": st.session_state.get("fx_shadow_blur", 10),
-                    "fx_shadow_offset": st.session_state.get("fx_shadow_offset", 8),
-                    "fx_shadow_opac": st.session_state.get("fx_shadow_opac", 40),
-                    "fx_round": st.session_state.get("fx_round", False),
-                    "fx_round_radius": st.session_state.get("fx_round_radius", 20),
-                    "fx_border": st.session_state.get("fx_border", False),
-                    "fx_border_color": st.session_state.get("fx_border_color", "#DDDDDD"),
-                    "fx_border_width": st.session_state.get("fx_border_width", 6),
-                }
-
-                prog = st.progress(0)
-                status = st.empty()
-                resultados, falhas, done = {}, 0, 0
-                failed_urls = []
-
-                with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
-                    futures = {
-                        ex.submit(
-                            baixar_processar, session, url,
-                            st.session_state["target_w"], st.session_state["target_h"],
-                            st.session_state["limite_kb"], st.session_state["req_timeout"],
-                            fx_cfg
-                        ): (loja, endereco, url)
-                        for loja, endereco, url in items
+                    fx_cfg = {
+                        "fx_shadow": st.session_state.get("fx_shadow", False),
+                        "fx_shadow_blur": st.session_state.get("fx_shadow_blur", 10),
+                        "fx_shadow_offset": st.session_state.get("fx_shadow_offset", 8),
+                        "fx_shadow_opac": st.session_state.get("fx_shadow_opac", 40),
+                        "fx_round": st.session_state.get("fx_round", False),
+                        "fx_round_radius": st.session_state.get("fx_round_radius", 20),
+                        "fx_border": st.session_state.get("fx_border", False),
+                        "fx_border_color": st.session_state.get("fx_border_color", "#DDDDDD"),
+                        "fx_border_width": st.session_state.get("fx_border_width", 6),
                     }
-                    for fut in as_completed(futures):
-                        loja, endereco, url = futures[fut]
-                        try:
-                            res = fut.result()
-                        except Exception as e:
-                            logger.error(f"Erro em download {url}: {e}")
-                            res = (url, False, None, None, None)
 
-                        if res and isinstance(res, (list, tuple)) and len(res) >= 2 and res[1] is True:
-                            url_key = res[0]
-                            file_path = res[2] if len(res) > 2 else None
-                            wh      = res[3] if len(res) > 3 else (0, 0)
-                            quality = res[4] if len(res) > 4 else {}
-                            sha1_hex  = res[5] if len(res) > 5 else ""
-                            dhash_hex = res[6] if len(res) > 6 else ""
+                    prog = st.progress(0)
+                    status = st.empty()
+                    resultados, falhas, done = {}, 0, 0
+                    failed_urls = []
 
-                            if (not file_path) or (not wh) or (not isinstance(wh, (list, tuple))):
+                    with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
+                        futures = {
+                            ex.submit(
+                                baixar_processar, session, url,
+                                st.session_state["target_w"], st.session_state["target_h"],
+                                st.session_state["limite_kb"], st.session_state["req_timeout"],
+                                fx_cfg
+                            ): (loja, endereco, url)
+                            for loja, endereco, url in items
+                        }
+                        for fut in as_completed(futures):
+                            loja, endereco, url = futures[fut]
+                            try:
+                                res = fut.result()
+                            except Exception as e:
+                                logger.error(f"Erro em download {url}: {e}")
+                                res = (url, False, None, None, None)
+
+                            if res and isinstance(res, (list, tuple)) and len(res) >= 2 and res[1] is True:
+                                url_key = res[0]
+                                file_path = res[2] if len(res) > 2 else None
+                                wh      = res[3] if len(res) > 3 else (0, 0)
+                                quality = res[4] if len(res) > 4 else {}
+                                sha1_hex  = res[5] if len(res) > 5 else ""
+                                dhash_hex = res[6] if len(res) > 6 else ""
+
+                                if (not file_path) or (not wh) or (not isinstance(wh, (list, tuple))):
+                                    falhas += 1
+                                    failed_urls.append(url)
+                                else:
+                                    resultados[url_key] = (loja, endereco, file_path, wh, quality, sha1_hex, dhash_hex)
+                            else:
                                 falhas += 1
                                 failed_urls.append(url)
-                            else:
-                                resultados[url_key] = (loja, endereco, file_path, wh, quality, sha1_hex, dhash_hex)
-                        else:
-                            falhas += 1
-                            failed_urls.append(url)
 
-                        done += 1
-                        prog.progress(int(done * 100 / total))
-                        status.write(f"Processadas {done}/{total} imagens...")
+                            done += 1
+                            prog.progress(int(done * 100 / total))
+                            status.write(f"Processadas {done}/{total} imagens...")
 
-                status.write(f"Concluído. Falhas: {falhas}")
+                    status.write(f"Concluído. Falhas: {falhas}")
 
-                st.session_state.failed_urls = failed_urls
-                st.session_state.url_line_map = url_line_map
+                    st.session_state.failed_urls = failed_urls
+                    st.session_state.url_line_map = url_line_map
 
-                if failed_urls:
-                    with st.expander("⚠️ Imagens puladas por erro (clique para ver)", expanded=False):
-                        for u in failed_urls[:200]:
-                            st.write(f"- Linha {url_line_map.get(u, '?')}: {u}")
-                        if len(failed_urls) > 200:
-                            st.caption(f"... e mais {len(failed_urls) - 200} itens.")
+                    if failed_urls:
+                        with st.expander("⚠️ Imagens puladas por erro (clique para ver)", expanded=False):
+                            for u in failed_urls[:200]:
+                                st.write(f"- Linha {url_line_map.get(u, '?')}: {u}")
+                            if len(failed_urls) > 200:
+                                st.caption(f"... e mais {len(failed_urls) - 200} itens.")
 
-                low_q, dups = detectar_problemas(
-                    resultados,
-                    st.session_state["min_megapixels"],
-                    st.session_state["min_blur_score"]
-                )
-                st.session_state.low_quality_urls = list(low_q)
-                st.session_state.duplicate_urls = list(dups)
+                    low_q, dups = detectar_problemas(
+                        resultados,
+                        st.session_state["min_megapixels"],
+                        st.session_state["min_blur_score"]
+                    )
+                    st.session_state.low_quality_urls = list(low_q)
+                    st.session_state.duplicate_urls = list(dups)
 
-                st.session_state.pipeline = {
-                    "items": items, "resultados": resultados, "falhas": falhas,
-                    "settings": {
-                        "max_per_slide": st.session_state["max_per_slide"],
-                        "sort_mode": st.session_state["sort_mode"],
-                        "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
-                        "title_font_name": st.session_state["title_font_name"],
-                        "title_font_size_pt": st.session_state["title_font_size_pt"],
-                        "title_font_bold": st.session_state["title_font_bold"],
-                        "logo_bytes": st.session_state.logo_bytes,
-                        "logo_width_in": st.session_state["logo_width_in"],
-                        "signature_bytes": st.session_state.signature_bytes,
-                        "auto_half_signature": st.session_state.get("auto_half_signature", True),
-                        "signature_width_in": st.session_state.get("signature_width_in",
-                                               (st.session_state["logo_width_in"]/2.0)),
-                        "signature_right_margin_in": st.session_state.get("sig_right_margin", 0.20),
-                        "signature_bottom_margin_in": st.session_state.get("sig_bottom_margin", 0.20),
-                        "thumb_px": st.session_state["thumb_px"],
-                        "thumbs_per_row": st.session_state["thumbs_per_row"],
-                        "effects": fx_cfg,
-                        "use_template": st.session_state.get("use_template", False),
-                        "template_bytes": template_file.getvalue()
-                            if (st.session_state.get("use_template") and template_file) else None,
-                        "low_quality_urls": list(low_q),
-                        "duplicate_urls": list(dups),
+                    st.session_state.pipeline = {
+                        "items": items, "resultados": resultados, "falhas": falhas,
+                        "settings": {
+                            "max_per_slide": st.session_state["max_per_slide"],
+                            "sort_mode": st.session_state["sort_mode"],
+                            "bg_rgb": hex_to_rgb(st.session_state["bg_hex"]),
+                            "title_font_name": st.session_state["title_font_name"],
+                            "title_font_size_pt": st.session_state["title_font_size_pt"],
+                            "title_font_bold": st.session_state["title_font_bold"],
+                            "logo_bytes": st.session_state.logo_bytes,
+                            "logo_width_in": st.session_state["logo_width_in"],
+                            "signature_bytes": st.session_state.signature_bytes,
+                            "auto_half_signature": st.session_state.get("auto_half_signature", True),
+                            "signature_width_in": st.session_state.get("signature_width_in",
+                                                   (st.session_state["logo_width_in"]/2.0)),
+                            "signature_right_margin_in": st.session_state.get("sig_right_margin", 0.20),
+                            "signature_bottom_margin_in": st.session_state.get("sig_bottom_margin", 0.20),
+                            "thumb_px": st.session_state["thumb_px"],
+                            "thumbs_per_row": st.session_state["thumbs_per_row"],
+                            "effects": fx_cfg,
+                            "use_template": st.session_state.get("use_template", False),
+                            "template_bytes": template_file.getvalue()
+                                if (st.session_state.get("use_template") and template_file) else None,
+                            "low_quality_urls": list(low_q),
+                            "duplicate_urls": list(dups),
+                        }
                     }
-                }
-                st.session_state.preview_mode = True
-                st.session_state.generated = False
-                st.session_state.ppt_bytes = None
-                st.session_state.images_zip_bytes = None
 
-                st.session_state.exp_plan = False
-                st.session_state.exp_style = False
-                st.session_state.exp_brand = False
-                st.session_state.exp_fx = False
-                st.session_state.exp_perf = False
-                st.session_state.exp_model = False
-                st.rerun()
+                    # DIFERENÇA CRÍTICA: Define o modo baseado no botão clicado
+                    if btn_preview:
+                        st.session_state.preview_mode = True
+                        st.session_state.quick_generate = False
+                    else:  # btn_generate_direct
+                        st.session_state.preview_mode = False  
+                        st.session_state.quick_generate = True
+                        st.session_state.generated = False
 
-    # 2) Pré-visualização
-    with st.expander("2. Pré-visualização", expanded=st.session_state.preview_mode):
-        if st.session_state.preview_mode and st.session_state.pipeline:
+                    st.session_state.ppt_bytes = None
+                    st.session_state.images_zip_bytes = None
+
+                    st.session_state.exp_plan = False
+                    st.session_state.exp_style = False
+                    st.session_state.exp_brand = False
+                    st.session_state.exp_fx = False
+                    st.session_state.exp_perf = False
+                    st.session_state.exp_model = False
+                    st.rerun()
+
+    # 2) Pré-visualização - MODIFICADO: Condicional mais inteligente
+    if st.session_state.preview_mode and st.session_state.pipeline and not st.session_state.quick_generate:
+        with st.expander("2. Pré-visualização", expanded=True):
             p = st.session_state.pipeline
 
             if st.session_state.get("failed_urls"):
@@ -1323,218 +1341,304 @@ def main_app():
             )
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT/ZIP. Depois, avance para a etapa 3.")
 
-    # 3) Gerar / Exportar
-    with st.expander("3. Gerar / Exportar", expanded=st.session_state.get("preview_mode", False)):
-        if not (st.session_state.preview_mode and st.session_state.pipeline):
-            st.info("Faça a pré-visualização antes de gerar/exportar.")
+    # 3) Gerar / Exportar - MODIFICADO: Lógica otimizada
+    with st.expander("3. Gerar / Exportar", expanded=st.session_state.get("preview_mode", False) or st.session_state.get("quick_generate", False)):
+        if not st.session_state.pipeline:
+            st.info("Faça o upload da planilha e processe as imagens primeiro.")
         else:
             cfg = st.session_state.pipeline["settings"]
             items = st.session_state.pipeline["items"]
             resultados = st.session_state.pipeline["resultados"]
 
-            r1, r2 = st.columns([1, 5])
-            with r1:
-                if st.button("🔄 Recriar Prévia", use_container_width=True):
-                    st.session_state.preview_bump = st.session_state.get("preview_bump", 0) + 1
-                    st.rerun()
-            with r2:
-                st.caption("Gera novamente as miniaturas dos slides com base nas exclusões/ordem atuais.")
-
-            batches = build_batches_for_preview(items, resultados, cfg, st.session_state.excluded_urls)
-            st.subheader("🔎 Prévia dos primeiros slides")
-            if len(batches) == 0:
-                st.warning("Nenhum slide seria gerado com as configurações atuais.")
-            else:
-                preview_count = min(3, len(batches))
-                cols = st.columns(preview_count)
-                for idx in range(preview_count):
-                    loja, end, batch = batches[idx]
-                    canvas = compose_slide_preview(batch, loja, end, cfg)  # 1280x720 RGB
-                    canvas = canvas.convert("RGBA")
-                    W, H = canvas.width, canvas.height
-                    title_rgb = pick_contrast_color(*cfg["bg_rgb"])
-
-                    draw = ImageDraw.Draw(canvas)
-                    top_bar_h = int(110)
-                    draw.rectangle([0, 0, W, top_bar_h], fill=cfg["bg_rgb"])
+            # GERAÇÃO DIRETA SE SOLICITADA
+            if st.session_state.quick_generate and not st.session_state.get("ppt_bytes"):
+                with st.spinner("🚀 Gerando PPT diretamente..."):
                     try:
-                        font_title = ImageFont.truetype("arial.ttf", 28)
-                        font_addr  = ImageFont.truetype("arial.ttf", 16)
-                    except Exception:
-                        font_title = ImageFont.load_default()
-                        font_addr  = ImageFont.load_default()
+                        titulo = (st.session_state.output_filename or "Apresentacao").strip()
+                        use_template = cfg.get("use_template", False)
+                        template_bytes = cfg.get("template_bytes")
 
-                    slide_w_in, slide_h_in = 13.33, 7.5
-                    x_left = int(W * (0.30 / slide_w_in))
-                    y_top  = int(H * (0.20 / slide_h_in))
-                    draw.text((x_left, y_top), str(loja), fill=title_rgb, font=font_title, anchor="la")
-                    if end:
-                        try:
-                            _, _, tw, th = draw.textbbox((0, 0), str(loja), font=font_title)
-                            y_addr = y_top + th + 6
-                        except Exception:
-                            y_addr = y_top + 32
-                        draw.text((x_left, y_addr), str(end), fill=title_rgb, font=font_addr, anchor="la")
+                        if use_template and template_bytes:
+                            ppt_bytes = gerar_ppt_modelo_capa_final(
+                                template_bytes=template_bytes,
+                                items=items, resultados=resultados, titulo=titulo,
+                                max_per_slide=cfg["max_per_slide"], sort_mode=cfg["sort_mode"],
+                                bg_rgb=cfg["bg_rgb"],
+                                logo_bytes=cfg["logo_bytes"], logo_width_in=cfg["logo_width_in"],
+                                signature_bytes=cfg["signature_bytes"],
+                                signature_width_in=cfg.get("signature_width_in"),
+                                auto_half_signature=cfg.get("auto_half_signature", True),
+                                signature_bottom_margin_in=cfg["signature_bottom_margin_in"],
+                                signature_right_margin_in=cfg["signature_right_margin_in"],
+                                title_font_name=cfg["title_font_name"],
+                                title_font_size_pt=cfg["title_font_size_pt"],
+                                title_font_bold=cfg["title_font_bold"],
+                                excluded_urls=st.session_state.excluded_urls
+                            )
+                        else:
+                            prs = Presentation()
+                            prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
+                            blank = prs.slide_layouts[6]
+                            title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+                            signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
+                                              else (cfg.get("signature_width_in") or 0.6)
 
-                    if cfg.get("logo_bytes"):
-                        try:
-                            _bio = BytesIO(cfg["logo_bytes"])
-                            logo_im = Image.open(_bio).convert("RGBA")
-                            target_w_px = max(1, int(W * (cfg["logo_width_in"] / slide_w_in)))
-                            ratio = target_w_px / float(logo_im.width)
-                            logo_im = logo_im.resize((target_w_px, int(logo_im.height * ratio)), Image.LANCZOS)
-                            x = W - int(W * (0.50 / slide_w_in)) - logo_im.width
-                            y = int(H * (0.20 / slide_h_in))
-                            canvas.alpha_composite(logo_im, (max(0, x), max(0, y)))
-                        except Exception:
-                            pass
+                            groups = OrderedDict()
+                            for loja, endereco, url in items:
+                                if url in resultados and url not in st.session_state.excluded_urls:
+                                    groups.setdefault(str(loja), []).append((url, resultados[url]))
 
-                    if cfg.get("signature_bytes"):
-                        try:
-                            _bio = BytesIO(cfg["signature_bytes"])
-                            sig_im = Image.open(_bio).convert("RGBA")
-                            if cfg.get("auto_half_signature", True):
-                                sig_w_in = (cfg.get("logo_width_in", 1.2) / 2.0)
+                            if cfg["sort_mode"] == "Nome da loja (A→Z)":
+                                loja_keys = sorted(groups.keys(),
+                                    key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
                             else:
-                                sig_w_in = cfg.get("signature_width_in") or 0.6
-                            target_w_px = max(1, int(W * (sig_w_in / slide_w_in)))
-                            ratio = target_w_px / float(sig_im.width)
-                            sig_im = sig_im.resize((target_w_px, int(sig_im.height * ratio)), Image.LANCZOS)
-                            right_margin_in  = float(cfg.get("signature_right_margin_in", 0.20))
-                            bottom_margin_in = float(cfg.get("signature_bottom_margin_in", 0.20))
-                            x = W - int(W * (right_margin_in / slide_w_in)) - sig_im.width
-                            y = H - int(H * (bottom_margin_in / slide_h_in)) - sig_im.height
-                            canvas.alpha_composite(sig_im, (max(0, x), max(0, y)))
-                        except Exception:
-                            pass
+                                loja_keys = list(groups.keys())
 
-                    with cols[idx]:
-                        st.image(canvas.convert("RGB"), caption=f"Slide {idx+1} — {loja}", use_column_width=True)
+                            for loja in loja_keys:
+                                imgs = groups[loja]; i = 0
+                                while i < len(imgs):
+                                    if cfg["max_per_slide"] == "Automático":
+                                        _url0, (_loja0, endereco, _file0, (w0, h0), *_rest0) = imgs[i]
+                                        per_slide = 3 if is_portrait(w0, h0) else 2
+                                    else:
+                                        per_slide = int(cfg["max_per_slide"])
+                                        endereco = imgs[i][1][1]
 
-            col1, col2, col3 = st.columns([3, 1, 1])
-            with col1:
-                st.session_state.output_filename = st.text_input(
-                    "Nome base do arquivo (sem extensão)",
-                    value=st.session_state.get("output_filename", "Modelo_01"),
-                    key="output_filename_input"
-                )
+                                    batch = imgs[i:i+per_slide]; i += per_slide
+                                    slide = prs.slides.add_slide(blank)
+                                    set_slide_bg(slide, cfg["bg_rgb"])
+                                    add_title_and_address(slide, loja, endereco, title_rgb,
+                                        cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"])
+                                    if cfg["logo_bytes"]:
+                                        add_logo_top_right(slide, prs, cfg["logo_bytes"], cfg["logo_width_in"])
+                                    if cfg["signature_bytes"]:
+                                        add_signature_bottom_right(slide, prs, cfg["signature_bytes"], signature_width,
+                                            bottom_margin_in=cfg["signature_bottom_margin_in"],
+                                            right_margin_in=cfg["signature_right_margin_in"])
+                                    slots = get_slots(len(batch), prs)
+                                    for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                                        place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in)
 
-            with col2:
-                if st.session_state.get("ppt_bytes"):
-                    st.download_button(
-                        "⬇️ Baixar PPT",
-                        data=st.session_state.ppt_bytes,
-                        file_name=f"{(st.session_state.output_filename or 'Apresentacao')}.pptx",
-                        mime="application/vnd.openxmlformats-officedocument.presentation.presentation",
-                        use_container_width=True,
-                        key=f"download_{st.session_state.get('download_key', 0)}"
+                            out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
+
+                        st.session_state.ppt_bytes = ppt_bytes
+                        st.session_state.generated = True
+                        st.session_state.quick_generate = False
+                        st.success("✅ PPT gerado com sucesso!")
+                        st.rerun()
+                    except Exception as e:
+                        logger.exception("Falha ao gerar PPT")
+                        st.error(f"Falha ao gerar PPT: {e}")
+                        st.session_state.quick_generate = False
+
+            # INTERFACE DE DOWNLOAD (comum para ambos os fluxos)
+            if st.session_state.pipeline:
+                # Apenas mostra prévia se não for geração direta
+                if not st.session_state.quick_generate:
+                    r1, r2 = st.columns([1, 5])
+                    with r1:
+                        if st.button("🔄 Recriar Prévia", use_container_width=True):
+                            st.session_state.preview_bump = st.session_state.get("preview_bump", 0) + 1
+                            st.rerun()
+                    with r2:
+                        st.caption("Gera novamente as miniaturas dos slides com base nas exclusões/ordem atuais.")
+
+                    batches = build_batches_for_preview(items, resultados, cfg, st.session_state.excluded_urls)
+                    st.subheader("🔎 Prévia dos primeiros slides")
+                    if len(batches) == 0:
+                        st.warning("Nenhum slide seria gerado com as configurações atuais.")
+                    else:
+                        preview_count = min(3, len(batches))
+                        cols = st.columns(preview_count)
+                        for idx in range(preview_count):
+                            loja, end, batch = batches[idx]
+                            canvas = compose_slide_preview(batch, loja, end, cfg)  # 1280x720 RGB
+                            canvas = canvas.convert("RGBA")
+                            W, H = canvas.width, canvas.height
+                            title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+
+                            draw = ImageDraw.Draw(canvas)
+                            top_bar_h = int(110)
+                            draw.rectangle([0, 0, W, top_bar_h], fill=cfg["bg_rgb"])
+                            try:
+                                font_title = ImageFont.truetype("arial.ttf", 28)
+                                font_addr  = ImageFont.truetype("arial.ttf", 16)
+                            except Exception:
+                                font_title = ImageFont.load_default()
+                                font_addr  = ImageFont.load_default()
+
+                            slide_w_in, slide_h_in = 13.33, 7.5
+                            x_left = int(W * (0.30 / slide_w_in))
+                            y_top  = int(H * (0.20 / slide_h_in))
+                            draw.text((x_left, y_top), str(loja), fill=title_rgb, font=font_title, anchor="la")
+                            if end:
+                                try:
+                                    _, _, tw, th = draw.textbbox((0, 0), str(loja), font=font_title)
+                                    y_addr = y_top + th + 6
+                                except Exception:
+                                    y_addr = y_top + 32
+                                draw.text((x_left, y_addr), str(end), fill=title_rgb, font=font_addr, anchor="la")
+
+                            if cfg.get("logo_bytes"):
+                                try:
+                                    _bio = BytesIO(cfg["logo_bytes"])
+                                    logo_im = Image.open(_bio).convert("RGBA")
+                                    target_w_px = max(1, int(W * (cfg["logo_width_in"] / slide_w_in)))
+                                    ratio = target_w_px / float(logo_im.width)
+                                    logo_im = logo_im.resize((target_w_px, int(logo_im.height * ratio)), Image.LANCZOS)
+                                    x = W - int(W * (0.50 / slide_w_in)) - logo_im.width
+                                    y = int(H * (0.20 / slide_h_in))
+                                    canvas.alpha_composite(logo_im, (max(0, x), max(0, y)))
+                                except Exception:
+                                    pass
+
+                            if cfg.get("signature_bytes"):
+                                try:
+                                    _bio = BytesIO(cfg["signature_bytes"])
+                                    sig_im = Image.open(_bio).convert("RGBA")
+                                    if cfg.get("auto_half_signature", True):
+                                        sig_w_in = (cfg.get("logo_width_in", 1.2) / 2.0)
+                                    else:
+                                        sig_w_in = cfg.get("signature_width_in") or 0.6
+                                    target_w_px = max(1, int(W * (sig_w_in / slide_w_in)))
+                                    ratio = target_w_px / float(sig_im.width)
+                                    sig_im = sig_im.resize((target_w_px, int(sig_im.height * ratio)), Image.LANCZOS)
+                                    right_margin_in  = float(cfg.get("signature_right_margin_in", 0.20))
+                                    bottom_margin_in = float(cfg.get("signature_bottom_margin_in", 0.20))
+                                    x = W - int(W * (right_margin_in / slide_w_in)) - sig_im.width
+                                    y = H - int(H * (bottom_margin_in / slide_h_in)) - sig_im.height
+                                    canvas.alpha_composite(sig_im, (max(0, x), max(0, y)))
+                                except Exception:
+                                    pass
+
+                            with cols[idx]:
+                                st.image(canvas.convert("RGB"), caption=f"Slide {idx+1} — {loja}", use_column_width=True)
+
+                # CONTROLES DE DOWNLOAD
+                col1, col2, col3 = st.columns([3, 1, 1])
+                with col1:
+                    st.session_state.output_filename = st.text_input(
+                        "Nome base do arquivo (sem extensão)",
+                        value=st.session_state.get("output_filename", "Modelo_01"),
+                        key="output_filename_input"
                     )
-                else:
-                    btn_generate = st.button("🧩 Gerar PPT", key="btn_generate", use_container_width=True)
 
-            with col3:
-                if st.session_state.get("images_zip_bytes"):
-                    st.download_button(
-                        "⬇️ Baixar Imagens (ZIP)",
-                        data=st.session_state.images_zip_bytes,
-                        file_name=f"{(st.session_state.output_filename or 'Imagens')}.zip",
-                        mime="application/zip",
-                        use_container_width=True,
-                        key=f"images_zip_{st.session_state.get('images_zip_key', 0)}"
-                    )
-                else:
-                    btn_zip = st.button("🖼️ Baixar Imagens", key="btn_zip", use_container_width=True)
+                with col2:
+                    if st.session_state.get("ppt_bytes"):
+                        st.download_button(
+                            "⬇️ Baixar PPT",
+                            data=st.session_state.ppt_bytes,
+                            file_name=f"{(st.session_state.output_filename or 'Apresentacao')}.pptx",
+                            mime="application/vnd.openxmlformats-officedocument.presentation.presentation",
+                            use_container_width=True,
+                            key=f"download_{st.session_state.get('download_key', 0)}"
+                        )
+                    elif not st.session_state.quick_generate:  # Só mostra botão de gerar se não for fluxo direto
+                        btn_generate = st.button("🧩 Gerar PPT", key="btn_generate", use_container_width=True)
 
-            # Geração do PPT
-            if (not st.session_state.get("ppt_bytes")) and ('btn_generate' in locals()) and btn_generate:
-                try:
-                    titulo = (st.session_state.output_filename or "Apresentacao").strip()
-                    use_template = cfg.get("use_template", False)
-                    template_bytes = cfg.get("template_bytes")
+                with col3:
+                    if st.session_state.get("images_zip_bytes"):
+                        st.download_button(
+                            "⬇️ Baixar Imagens (ZIP)",
+                            data=st.session_state.images_zip_bytes,
+                            file_name=f"{(st.session_state.output_filename or 'Imagens')}.zip",
+                            mime="application/zip",
+                            use_container_width=True,
+                            key=f"images_zip_{st.session_state.get('images_zip_key', 0)}"
+                        )
+                    elif not st.session_state.quick_generate:  # Só mostra botão de gerar ZIP se não for fluxo direto
+                        btn_zip = st.button("🖼️ Baixar Imagens", key="btn_zip", use_container_width=True)
 
-                    if use_template and template_bytes:
-                        ppt_bytes = gerar_ppt_modelo_capa_final(
-                            template_bytes=template_bytes,
-                            items=items, resultados=resultados, titulo=titulo,
-                            max_per_slide=cfg["max_per_slide"], sort_mode=cfg["sort_mode"],
-                            bg_rgb=cfg["bg_rgb"],
-                            logo_bytes=cfg["logo_bytes"], logo_width_in=cfg["logo_width_in"],
-                            signature_bytes=cfg["signature_bytes"],
-                            signature_width_in=cfg.get("signature_width_in"),
-                            auto_half_signature=cfg.get("auto_half_signature", True),
-                            signature_bottom_margin_in=cfg["signature_bottom_margin_in"],
-                            signature_right_margin_in=cfg["signature_right_margin_in"],
-                            title_font_name=cfg["title_font_name"],
-                            title_font_size_pt=cfg["title_font_size_pt"],
-                            title_font_bold=cfg["title_font_bold"],
+                # Geração do PPT (apenas para fluxo de visualização)
+                if (not st.session_state.get("ppt_bytes")) and ('btn_generate' in locals()) and btn_generate and not st.session_state.quick_generate:
+                    try:
+                        titulo = (st.session_state.output_filename or "Apresentacao").strip()
+                        use_template = cfg.get("use_template", False)
+                        template_bytes = cfg.get("template_bytes")
+
+                        if use_template and template_bytes:
+                            ppt_bytes = gerar_ppt_modelo_capa_final(
+                                template_bytes=template_bytes,
+                                items=items, resultados=resultados, titulo=titulo,
+                                max_per_slide=cfg["max_per_slide"], sort_mode=cfg["sort_mode"],
+                                bg_rgb=cfg["bg_rgb"],
+                                logo_bytes=cfg["logo_bytes"], logo_width_in=cfg["logo_width_in"],
+                                signature_bytes=cfg["signature_bytes"],
+                                signature_width_in=cfg.get("signature_width_in"),
+                                auto_half_signature=cfg.get("auto_half_signature", True),
+                                signature_bottom_margin_in=cfg["signature_bottom_margin_in"],
+                                signature_right_margin_in=cfg["signature_right_margin_in"],
+                                title_font_name=cfg["title_font_name"],
+                                title_font_size_pt=cfg["title_font_size_pt"],
+                                title_font_bold=cfg["title_font_bold"],
+                                excluded_urls=st.session_state.excluded_urls
+                            )
+                        else:
+                            prs = Presentation()
+                            prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
+                            blank = prs.slide_layouts[6]
+                            title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+                            signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
+                                              else (cfg.get("signature_width_in") or 0.6)
+
+                            groups = OrderedDict()
+                            for loja, endereco, url in items:
+                                if url in resultados and url not in st.session_state.excluded_urls:
+                                    groups.setdefault(str(loja), []).append((url, resultados[url]))
+
+                            if cfg["sort_mode"] == "Nome da loja (A→Z)":
+                                loja_keys = sorted(groups.keys(),
+                                    key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
+                            else:
+                                loja_keys = list(groups.keys())
+
+                            for loja in loja_keys:
+                                imgs = groups[loja]; i = 0
+                                while i < len(imgs):
+                                    if cfg["max_per_slide"] == "Automático":
+                                        _url0, (_loja0, endereco, _file0, (w0, h0), *_rest0) = imgs[i]
+                                        per_slide = 3 if is_portrait(w0, h0) else 2
+                                    else:
+                                        per_slide = int(cfg["max_per_slide"])
+                                        endereco = imgs[i][1][1]
+
+                                    batch = imgs[i:i+per_slide]; i += per_slide
+                                    slide = prs.slides.add_slide(blank)
+                                    set_slide_bg(slide, cfg["bg_rgb"])
+                                    add_title_and_address(slide, loja, endereco, title_rgb,
+                                        cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"])
+                                    if cfg["logo_bytes"]:
+                                        add_logo_top_right(slide, prs, cfg["logo_bytes"], cfg["logo_width_in"])
+                                    if cfg["signature_bytes"]:
+                                        add_signature_bottom_right(slide, prs, cfg["signature_bytes"], signature_width,
+                                            bottom_margin_in=cfg["signature_bottom_margin_in"],
+                                            right_margin_in=cfg["signature_right_margin_in"])
+                                    slots = get_slots(len(batch), prs)
+                                    for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                                        place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in)
+
+                            out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
+
+                        st.session_state.ppt_bytes = ppt_bytes
+                        st.session_state.generated = True
+                        st.rerun()
+                    except Exception as e:
+                        logger.exception("Falha ao gerar PPT")
+                        st.error(f"Falha ao gerar PPT: {e}")
+
+                # Geração do ZIP (apenas para fluxo de visualização)
+                if (not st.session_state.get("images_zip_bytes")) and ('btn_zip' in locals()) and btn_zip and not st.session_state.quick_generate:
+                    try:
+                        zip_bytes = montar_zip_imagens(
+                            items=items,
+                            resultados=resultados,
                             excluded_urls=st.session_state.excluded_urls
                         )
-                    else:
-                        prs = Presentation()
-                        prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
-                        blank = prs.slide_layouts[6]
-                        title_rgb = pick_contrast_color(*cfg["bg_rgb"])
-                        signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
-                                          else (cfg.get("signature_width_in") or 0.6)
-
-                        groups = OrderedDict()
-                        for loja, endereco, url in items:
-                            if url in resultados and url not in st.session_state.excluded_urls:
-                                groups.setdefault(str(loja), []).append((url, resultados[url]))
-
-                        if cfg["sort_mode"] == "Nome da loja (A→Z)":
-                            loja_keys = sorted(groups.keys(),
-                                key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
-                        else:
-                            loja_keys = list(groups.keys())
-
-                        for loja in loja_keys:
-                            imgs = groups[loja]; i = 0
-                            while i < len(imgs):
-                                if cfg["max_per_slide"] == "Automático":
-                                    _url0, (_loja0, endereco, _file0, (w0, h0), *_rest0) = imgs[i]
-                                    per_slide = 3 if is_portrait(w0, h0) else 2
-                                else:
-                                    per_slide = int(cfg["max_per_slide"])
-                                    endereco = imgs[i][1][1]
-
-                                batch = imgs[i:i+per_slide]; i += per_slide
-                                slide = prs.slides.add_slide(blank)
-                                set_slide_bg(slide, cfg["bg_rgb"])
-                                add_title_and_address(slide, loja, endereco, title_rgb,
-                                    cfg["title_font_name"], cfg["title_font_size_pt"], cfg["title_font_bold"])
-                                if cfg["logo_bytes"]:
-                                    add_logo_top_right(slide, prs, cfg["logo_bytes"], cfg["logo_width_in"])
-                                if cfg["signature_bytes"]:
-                                    add_signature_bottom_right(slide, prs, cfg["signature_bytes"], signature_width,
-                                        bottom_margin_in=cfg["signature_bottom_margin_in"],
-                                        right_margin_in=cfg["signature_right_margin_in"])
-                                slots = get_slots(len(batch), prs)
-                                for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
-                                    place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in)
-
-                        out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
-
-                    st.session_state.ppt_bytes = ppt_bytes
-                    st.session_state.generated = True
-                    st.rerun()
-                except Exception as e:
-                    logger.exception("Falha ao gerar PPT")
-                    st.error(f"Falha ao gerar PPT: {e}")
-
-            # Geração do ZIP
-            if (not st.session_state.get("images_zip_bytes")) and ('btn_zip' in locals()) and btn_zip:
-                try:
-                    zip_bytes = montar_zip_imagens(
-                        items=items,
-                        resultados=resultados,
-                        excluded_urls=st.session_state.excluded_urls
-                    )
-                    st.session_state.images_zip_bytes = zip_bytes
-                    st.rerun()
-                except Exception as e:
-                    logger.exception("Falha ao montar ZIP")
-                    st.error(f"Falha ao montar ZIP: {e}")
+                        st.session_state.images_zip_bytes = zip_bytes
+                        st.rerun()
+                    except Exception as e:
+                        logger.exception("Falha ao montar ZIP")
+                        st.error(f"Falha ao montar ZIP: {e}")
 
 # -------------------------------------------------------------------
 # ROTEAMENTO FINAL
@@ -1543,8 +1647,6 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
-
 
 
 
