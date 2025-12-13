@@ -563,6 +563,7 @@ def gerar_ppt_modelo_capa_final(
     signature_bytes=None, signature_width_in=None, auto_half_signature=True,
     signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
     title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
+    title_font_color_rgb=(0,0,0),
     excluded_urls=None
 ):
     excluded_urls = excluded_urls or set()
@@ -582,7 +583,7 @@ def gerar_ppt_modelo_capa_final(
     else:
         loja_keys = list(groups.keys())
 
-    title_rgb = pick_contrast_color(*bg_rgb)
+    title_rgb = title_font_color_rgb if title_font_color_rgb else pick_contrast_color(*bg_rgb)
     signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
 
     for loja in loja_keys:
@@ -661,7 +662,7 @@ def _paste_fit(canvas: Image.Image, im: Image.Image, slot):
 
 def compose_slide_preview(batch, loja, endereco, cfg, canvas_w=1280, canvas_h=720):
     bg = cfg["bg_rgb"]
-    title_rgb = pick_contrast_color(*bg)
+    title_rgb = cfg.get("title_font_color_rgb", pick_contrast_color(*bg))
     canvas = Image.new("RGB", (canvas_w, canvas_h), bg)
 
     try:
@@ -1019,6 +1020,7 @@ def main_app():
             title_font_name = st.text_input("Fonte do título", value="Radikal", key="title_font_name")
             title_font_size_pt = st.slider("Tamanho (pt)", 8, 48, 18, 1, key="title_font_size_pt")
             title_font_bold = st.checkbox("Negrito", value=True, key="title_font_bold")
+            title_font_color = st.color_picker("Cor da fonte", value="#000000", key="title_font_color")
 
         with st.expander("🏷️ Logo & ✍️ Assinatura", expanded=st.session_state.exp_brand):
             st.caption("Logo (canto superior direito)")
@@ -1278,6 +1280,7 @@ def main_app():
                             "title_font_name": st.session_state["title_font_name"],
                             "title_font_size_pt": st.session_state["title_font_size_pt"],
                             "title_font_bold": st.session_state["title_font_bold"],
+                            "title_font_color_rgb": hex_to_rgb(st.session_state["title_font_color"]),
                             "logo_bytes": st.session_state.logo_bytes,
                             "logo_width_in": st.session_state["logo_width_in"],
                             "signature_bytes": st.session_state.signature_bytes,
@@ -1373,13 +1376,14 @@ def main_app():
                                 title_font_name=cfg["title_font_name"],
                                 title_font_size_pt=cfg["title_font_size_pt"],
                                 title_font_bold=cfg["title_font_bold"],
+                                title_font_color_rgb=cfg.get("title_font_color_rgb", (0,0,0)),
                                 excluded_urls=st.session_state.excluded_urls
                             )
                         else:
                             prs = Presentation()
                             prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
                             blank = prs.slide_layouts[6]
-                            title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+                            title_rgb = cfg.get("title_font_color_rgb", pick_contrast_color(*cfg["bg_rgb"]))
                             signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
                                               else (cfg.get("signature_width_in") or 0.6)
 
@@ -1455,7 +1459,7 @@ def main_app():
                             canvas = compose_slide_preview(batch, loja, end, cfg)  # 1280x720 RGB
                             canvas = canvas.convert("RGBA")
                             W, H = canvas.width, canvas.height
-                            title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+                            title_rgb = cfg.get("title_font_color_rgb", pick_contrast_color(*cfg["bg_rgb"]))
 
                             draw = ImageDraw.Draw(canvas)
                             top_bar_h = int(110)
@@ -1571,13 +1575,14 @@ def main_app():
                                 title_font_name=cfg["title_font_name"],
                                 title_font_size_pt=cfg["title_font_size_pt"],
                                 title_font_bold=cfg["title_font_bold"],
+                                title_font_color_rgb=cfg.get("title_font_color_rgb", (0,0,0)),
                                 excluded_urls=st.session_state.excluded_urls
                             )
                         else:
                             prs = Presentation()
                             prs.slide_width, prs.slide_height = Inches(13.33), Inches(7.5)
                             blank = prs.slide_layouts[6]
-                            title_rgb = pick_contrast_color(*cfg["bg_rgb"])
+                            title_rgb = cfg.get("title_font_color_rgb", pick_contrast_color(*cfg["bg_rgb"]))
                             signature_width = (cfg["logo_width_in"]/2.0) if cfg.get("auto_half_signature", True) \
                                               else (cfg.get("signature_width_in") or 0.6)
 
@@ -1647,7 +1652,6 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
 
 
 
