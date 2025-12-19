@@ -1,5 +1,978 @@
+# === PARTE 1/10 =====================================================
+# Boot, imports, logging e estilos iniciais
+
+import re
+import os
+import gc
+import base64
+import hashlib
+from io import BytesIO
+from collections import OrderedDict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import zipfile
+import numpy as np
+import logging, sys  # <<< LOGGING
+import tempfile
+
+import streamlit as st
+import pandas as pd
+import requests
+from PIL import Image, ImageOps, ImageDraw, ImageFilter, ImageFont, ImageFile
+from pptx import Presentation
+from pptx.util import Inches, Pt
+from pptx.dml.color import RGBColor
+
+# -------------------------------------------------------------------
+# PIL — tolerância a imagens problemáticas
+# -------------------------------------------------------------------
+ImageFile.LOAD_TRUNCATED_IMAGES = True
+Image.MAX_IMAGE_PIXELS = 60_000_000
+
+# -------------------------------------------------------------------
+# LOGGING (stdout -> aparece nos logs do Streamlit Cloud)
+# -------------------------------------------------------------------
+logging.basicConfig(
+    level=logging.INFO,  # mude para logging.DEBUG para ver tudo
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    stream=sys.stdout,
+)
+logger = logging.getLogger("gerador_book")
+
+# -------------------------------------------------------------------
+# CONFIG GERAL
+# -------------------------------------------------------------------
+st.set_page_config(page_title="Gerador de Book", page_icon="📸", layout="wide")
+st.set_option("client.showErrorDetails", True)  # detalha erros na UI
+
+# --- CSS básico (UX) ---
+BASE_CSS = """
+<style>
+.steps {display:flex; gap:8px; align-items:center; margin:.25rem 0 .5rem;}
+.step {padding:6px 10px; border-radius:999px; border:1px solid #E5E7EB; color:#111; background:#fff; font-weight:700; font-size:13px;}
+.step.active {background:#FF7A00; color:#fff; border-color:#FF7A00;}
+.step.sep {opacity:.5}
+
+.img-card { border:1px solid #DDD; border-radius:10px; padding:10px; transition:all .15s ease;
+  background:#fff; display:flex; flex-direction:column; gap:8px; height:100%; }
+.dark .img-card { background:#0f131a; border-color:#232a36; }
+.img-card:hover { box-shadow:0 8px 20px rgba(0,0,0,.06); transform:translateY(-2px); }
+.group-head {display:flex; justify-content:space-between; align-items:center; padding:.25rem 0;}
+.badge {display:inline-block; padding:2px 8px; border-radius:999px; border:1px solid #e5e7eb; font-size:12px;}
+.reset-zone, .logout-zone {margin-top:.5rem;}
+.quick-actions {display: flex; gap: 10px; margin: 10px 0;}
+.quick-actions button {flex: 1;}
+</style>
+"""
+st.markdown(BASE_CSS, unsafe_allow_html=True)
+
+# === PARTE 2/10 =====================================================
+# Continuação dos estilos (CSS login + tema)
+
+LOGIN_CSS = """
+<style>
+.login-wrap { max-width: 520px; margin: 0 auto; }
+.login-hero {
+  background: linear-gradient(90deg, #FF7A00 0%, #FF9944 100%);
+  color:#fff; padding:16px 18px; border-radius:14px 14px 0 0;
+  font-weight:700; line-height:1.2; margin: 8px 0 0 0;
+}
+.login-card {
+  border:1px solid #E7E7E7; border-top:none; background:#ffffff;
+  padding:18px; border-radius:0 0 14px 14px; margin:0;
+}
+.stForm .stButton > button {
+  background:#FF7A00 !important; color:#fff !important;
+  border:none !important; border-radius:10px !important;
+  font-weight:800 !important;
+}
+.stForm .stButton > button:hover { background:#E66E00 !important; }
+</style>
+"""
+
+# -------------------------------------------------------------------
+# TEMA
+# -------------------------------------------------------------------
+def apply_theme(dark: bool):
+    ORANGE = "#FF7A00"; ORANGE_HOVER = "#E66E00"; BLACK = "#111111"; GRAY_BG = "#f6f6f7"
+    if dark:
+        palette = f"""
+        <style>
+        :root {{ --accent:{ORANGE}; --accent-hover:{ORANGE_HOVER}; --text:#f5f5f5; --bg:#0e1117; --panel:#11151c; }}
+        .stApp {{ background-color:var(--bg); color:var(--text); }}
+        section[data-testid="stSidebar"] > div {{ background:var(--panel); border-right:1px solid #1b212c; }}
+        .stButton > button, .stDownloadButton > button {{ background:var(--accent); color:#fff; border-radius:10px; border:none; }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{ background:var(--accent-hover); }}
+        .stProgress > div > div {{ background-color:var(--accent); }}
+        </style>
+        """
+    else:
+        palette = f"""
+        <style>
+        :root {{ --accent:{ORANGE}; --accent-hover:{ORANGE_HOVER}; --text:{BLACK}; --bg:#ffffff; --panel:{GRAY_BG}; }}
+        .stApp {{ background-color:var(--bg); color:var(--text); }}
+        section[data-testid="stSidebar"] > div {{ background:var(--panel); border-right:1px solid #ececec; }}
+        .stButton > button, .stDownloadButton > button {{ background:var(--accent); color:#fff; border-radius:10px; border:none; }}
+        .stButton > button:hover, .stDownloadButton > button:hover {{ background:var(--accent-hover); }}
+        .stProgress > div > div {{ background-color:var(--accent); }}
+        </style>
+        """
+    st.markdown(palette, unsafe_allow_html=True)
+
+if "dark_mode" not in st.session_state:
+    st.session_state.dark_mode = False
+
+
+# === PARTE 3/10 =====================================================
+# Login
+
+ALLOWED_USERS = {
+    "lucas.costa@mkthouse.com.br": "mudar12345",
+    "gabriel.garcia@mkthouse.com.br": "Peter2025!",
+    "daniela.scibor@mkthouse.com.br": "mudar12345",
+    "regiane.paula@mkthouse.com.br": "mudar12345",
+    "pamela.fructuoso@mkthouse.com.br": "mudar12345",
+    "fernanda.sabino@mkthouse.com.br": "mudar12345",
+    "cacia.nogueira@mkthouse.com.br": "mudar12345",
+    "edson.fortaleza@mkthouse.com.br": "mudar12345",
+    "lucas.depaula@mkthouse.com.br": "mudar12345",
+    "janaina.morais@mkthouse.com.br": "mudar12345",
+    "debora.ramos@mkthouse.com.br": "mudar12345",
+    "david.silva@mkthouse.com.br": "mudar12345",
+}
+ALLOWED_USERS = {k.strip().lower(): v for k, v in ALLOWED_USERS.items()}
+
+def do_login():
+    st.markdown(LOGIN_CSS, unsafe_allow_html=True)
+    st.title("🔒 Acesso Restrito")
+    st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
+    st.markdown('<div class="login-hero">Use seu e-mail corporativo. Em caso de dúvidas, contate o BI.</div>', unsafe_allow_html=True)
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+    with st.form("login_form", clear_on_submit=False):
+        email = st.text_input("E-mail", placeholder="seu.email@mkthouse.com.br")
+        pwd = st.text_input("Senha", type="password", placeholder="••••••••")
+        entrar = st.form_submit_button("Entrar")
+    st.markdown('</div></div>', unsafe_allow_html=True)
+
+    if entrar:
+        email_norm = (email or "").strip().lower()
+        if email_norm in ALLOWED_USERS and pwd == ALLOWED_USERS[email_norm]:
+            st.session_state.auth = True
+            st.session_state.user_email = email_norm
+            logger.info(f"Usuário autenticado: {email_norm}")
+            st.rerun()
+        else:
+            logger.warning(f"Tentativa de login falhou: {email_norm}")
+            st.error("Credenciais inválidas.")
+
+if "auth" not in st.session_state:
+    st.session_state.auth = False
+
+# === PARTE 4/10 =====================================================
+# Funções utilitárias (utils) + cache em disco
+
+URL_RE = re.compile(r'https?://\S+')
+
+def extrair_links(celula):
+    if pd.isna(celula):
+        return []
+    t = str(celula).replace(",", " ").replace("(", " ").replace(")", " ").replace('"', " ").replace("'", " ")
+    return [u.rstrip(").,") for u in URL_RE.findall(t)]
+
+def redimensionar(img: Image.Image, max_w: int, max_h: int) -> Image.Image:
+    img = ImageOps.exif_transpose(img)
+    if img.mode != "RGB":
+        img = img.convert("RGB")
+    img.thumbnail((max_w, max_h), resample=Image.LANCZOS)
+    return img
+
+def comprimir_jpeg_binsearch(img: Image.Image, limite_kb: int) -> BytesIO:
+    lo, hi, best = 35, 95, None
+    buf = BytesIO()
+    img.save(buf, "JPEG", quality=75, optimize=True, progressive=True, subsampling=2)
+    if buf.tell()/1024 <= limite_kb:
+        buf.seek(0)
+        return buf
+    best = buf
+    while lo <= hi:
+        mid = (lo+hi)//2
+        buf = BytesIO()
+        img.save(buf, "JPEG", quality=mid, optimize=True, progressive=True, subsampling=2)
+        if buf.tell()/1024 <= limite_kb:
+            best = buf
+            lo = mid+1
+        else:
+            hi = mid-1
+    if best is None:
+        best = BytesIO()
+        img.save(best, "JPEG", quality=35, optimize=True, progressive=True, subsampling=2)
+    best.seek(0)
+    return best
+
+def px_to_inches(px): 
+    return Inches(px / 96.0)
+
+def hex_to_rgb(hex_str: str):
+    s = hex_str.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join([c*2 for c in s])
+    return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+
+def pick_contrast_color(r, g, b):
+    brightness = (r*299 + g*587 + b*114) / 1000
+    return (0,0,0) if brightness > 128 else (255,255,255)
+
+# --- HASHES p/ duplicatas ---
+def _sha1_bytes(b: bytes) -> str:
+    return hashlib.sha1(b).hexdigest()
+
+def _img_dhash(img: Image.Image, hash_size: int = 8) -> str:
+    im = ImageOps.exif_transpose(img).convert("L").resize((hash_size + 1, hash_size), Image.LANCZOS)
+    pixels = np.asarray(im, dtype=np.int16)
+    diff = pixels[:, 1:] > pixels[:, :-1]
+    bits = 0
+    for row in diff:
+        for v in row:
+            bits = (bits << 1) | int(v)
+    return f"{bits:0{hash_size*hash_size//4}x}"
+
+# ---- Cache em disco (/tmp) ----
+TMP_ROOT = tempfile.gettempdir()
+APP_TMP_DIR = os.path.join(TMP_ROOT, "gerador_book_cache")
+os.makedirs(APP_TMP_DIR, exist_ok=True)
+
+def _save_bytes_to_tmp(ext: str, data: bytes) -> str:
+    fd, path = tempfile.mkstemp(prefix="gb_", suffix=f".{ext}", dir=APP_TMP_DIR)
+    with os.fdopen(fd, "wb") as f:
+        f.write(data)
+    return path
+
+def _open_img_from_path(path: str) -> Image.Image:
+    im = Image.open(path)
+    im.load()
+    return im
+
+# === PARTE 5/10 =====================================================
+# Qualidade da imagem + Efeitos
+
+def _laplacian_var_gray(pil_img: Image.Image) -> float:
+    g = pil_img.convert("L")
+    a = np.asarray(g, dtype=np.float32)
+    H, W = a.shape
+    if H < 3 or W < 3:
+        return 0.0
+    out = (a[0:-2,1:-1] + a[1:-1,0:-2] + a[1:-1,2:] + a[2:,1:-1] - 4*a[1:-1,1:-1])
+    return float(out.var())
+
+def medir_qualidade(img: Image.Image) -> dict:
+    im = ImageOps.exif_transpose(img)
+    w, h = im.size
+    im_small = im.copy()
+    im_small.thumbnail((1024, 1024), Image.LANCZOS)
+    g = im_small.convert("L")
+    arr = np.asarray(g, dtype=np.float32)
+    return {
+        "width": int(w),
+        "height": int(h),
+        "megapixels": float((w*h)/1_000_000.0),
+        "mean_brightness": float(arr.mean()),
+        "std_contrast": float(arr.std()),
+        "blur_score": _laplacian_var_gray(im_small),
+    }
+
+def _hex_to_rgba_tuple(hex_color, alpha=255):
+    s = hex_color.strip().lstrip("#")
+    if len(s) == 3:
+        s = "".join([c*2 for c in s])
+    r, g, b = int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+    return (r, g, b, alpha)
+
+def _apply_rounded_corners(img_rgba: Image.Image, radius: int) -> Image.Image:
+    if radius <= 0:
+        return img_rgba
+    w, h = img_rgba.size
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+    draw.rounded_rectangle([0, 0, w, h], radius=radius, fill=255)
+    out = img_rgba.copy()
+    out.putalpha(mask)
+    return out
+
+def _apply_border_color(img_rgba: Image.Image, border_px: int, border_hex: str, radius: int) -> Image.Image:
+    if border_px <= 0:
+        return img_rgba
+    w, h = img_rgba.size
+    result = Image.new("RGBA", (w + 2*border_px, h + 2*border_px), (0,0,0,0))
+    draw = ImageDraw.Draw(result)
+    outer = [0, 0, result.size[0], result.size[1]]
+    inner = [border_px, border_px, border_px + w, border_px + h]
+    draw.rounded_rectangle(outer, radius=radius+border_px, fill=_hex_to_rgba_tuple(border_hex))
+    hole = Image.new("L", result.size, 255)
+    hole_draw = ImageDraw.Draw(hole)
+    hole_draw.rounded_rectangle(inner, radius=radius, fill=0)
+    result.putalpha(hole)
+    result.alpha_composite(img_rgba, dest=(border_px, border_px))
+    return result
+
+def _apply_drop_shadow(img_rgba: Image.Image, blur: int, offset: int, opacity_pct: int) -> Image.Image:
+    if blur <= 0 and offset <= 0:
+        return img_rgba
+    alpha = img_rgba.split()[-1]
+    a = max(0, min(255, int(255 * (opacity_pct/100))))
+    pad = blur + offset + 2
+    w, h = img_rgba.size
+    canvas = Image.new("RGBA", (w + pad, h + pad), (0,0,0,0))
+    shadow = Image.new("RGBA", (w, h), (0,0,0,a))
+    shadow.putalpha(alpha)
+    shadow = shadow.filter(ImageFilter.GaussianBlur(radius=blur))
+    canvas.alpha_composite(shadow, dest=(offset, offset))
+    canvas.alpha_composite(img_rgba, dest=(0,0))
+    return canvas
+
+def apply_effects_pipeline(img_rgb: Image.Image, cfg: dict) -> Image.Image:
+    out = img_rgb.convert("RGBA")
+    if cfg.get("fx_round"):
+        out = _apply_rounded_corners(out, int(cfg.get("fx_round_radius", 20)))
+    if cfg.get("fx_border"):
+        out = _apply_border_color(
+            out,
+            int(cfg.get("fx_border_width", 6)),
+            cfg.get("fx_border_color", "#DDDDDD"),
+            int(cfg.get("fx_round_radius", 20)) if cfg.get("fx_round") else 0
+        )
+    if cfg.get("fx_shadow"):
+        out = _apply_drop_shadow(
+            out,
+            int(cfg.get("fx_shadow_blur", 10)),
+            int(cfg.get("fx_shadow_offset", 8)),
+            int(cfg.get("fx_shadow_opac", 40)),
+        )
+    return out
+
+# === PARTE 6/10 =====================================================
+# PPT helpers + Download & Process
+
+# -------------------------------------------------------------------
+# PPT HELPERS
+# -------------------------------------------------------------------
+def get_slots(n, prs):
+    IMG_TOP = Inches(1.2); CONTENT_W = Inches(11); CONTENT_H = Inches(6); GAP = Inches(0.2)
+    start_left = (prs.slide_width - CONTENT_W) / 2
+    if n == 1:
+        return [(start_left, IMG_TOP, CONTENT_W, CONTENT_H)]
+    cols = n
+    total_gap = GAP * (cols - 1)
+    cell_w = (CONTENT_W - total_gap) / cols
+    return [(start_left + c*(cell_w+GAP), IMG_TOP, cell_w, CONTENT_H) for c in range(cols)]
+
+def add_title_and_address(slide, title_text, address_text, title_rgb=(0,0,0),
+                          font_name="Radikal", title_font_size_pt=18, title_font_bold=True):
+    TITLE_LEFT, TITLE_TOP, TITLE_W = Inches(0.5), Inches(0.2), Inches(12)
+    tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, Inches(1))
+    tf = tx.text_frame; tf.clear()
+    p = tf.paragraphs[0]; run = p.add_run(); run.text = title_text
+    f = run.font; f.name = font_name or "Radikal"; f.size = Pt(title_font_size_pt or 18)
+    f.bold = bool(title_font_bold); f.color.rgb = RGBColor(*title_rgb)
+    p.alignment = 1
+    if address_text:
+        p2 = tf.add_paragraph()
+        run2 = p2.add_run(); run2.text = address_text
+        f2 = run2.font; f2.name = font_name or "Radikal"; f2.size = Pt(max(8, (title_font_size_pt or 18) / 2))
+        f2.bold = False; f2.color.rgb = RGBColor(*title_rgb)
+        p2.alignment = 1
+
+def set_slide_bg(slide, rgb_tuple):
+    fill = slide.background.fill
+    fill.solid(); fill.fore_color.rgb = RGBColor(*rgb_tuple)
+
+def place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in):
+    img_w_in = px_to_inches(w_px); img_h_in = px_to_inches(h_px)
+    ratio = min(float(max_w_in)/float(img_w_in), float(max_h_in)/float(img_h_in), 1.0)
+    final_w = img_w_in * ratio; final_h = img_h_in * ratio
+    x = left + (max_w_in - final_w)/2; y = top + (max_h_in - final_h)/2
+    slide.shapes.add_picture(file_path, x, y, width=final_w, height=final_h)
+
+def is_portrait(w_px: int, h_px: int, tol: float = 1.05) -> bool:
+    if w_px <= 0 or h_px <= 0:
+        return False
+    return (h_px / float(w_px)) >= tol
+
+def move_slide_to_index(prs, old_index, new_index):
+    sldIdLst = prs.slides._sldIdLst
+    sld = sldIdLst[old_index]
+    sldIdLst.remove(sld)
+    sldIdLst.insert(new_index, sld)
+
+def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
+    if not logo_bytes: 
+        return
+    left = prs.slide_width - Inches(0.5) - Inches(logo_width_in); top = Inches(0.2)
+    slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
+
+def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_width_in: float,
+                               bottom_margin_in: float = 0.2, right_margin_in: float = 0.2):
+    if not signature_bytes: 
+        return
+    try:
+        im = Image.open(BytesIO(signature_bytes)); w_px, h_px = im.size
+        ratio = (h_px / float(w_px)) if w_px else 0.4
+    except Exception:
+        ratio = 0.4
+    sig_h_in = signature_width_in * ratio
+    left = prs.slide_width - Inches(right_margin_in) - Inches(signature_width_in)
+    top  = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
+    slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
+
+# -------------------------------------------------------------------
+# DOWNLOAD & PROCESS (salva em /tmp e retorna file_path)
+#   -> SUCCESS: (url, True, file_path, (w,h), quality, sha1_hex, dhash_hex)
+# -------------------------------------------------------------------
+def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
+    try:
+        logger.debug(f"Iniciando download: {url}")
+        r = session.get(url, timeout=timeout, stream=True)
+        if r.status_code != 200:
+            logger.warning(f"HTTP {r.status_code} ao baixar: {url}")
+            return (url, False, None, None, None)
+
+        raw_bytes = r.content
+        if len(raw_bytes) > 20 * 1024 * 1024:  # >20MB
+            logger.warning(f"Arquivo muito grande (>20MB): {url}")
+            return (url, False, None, None, None)
+
+        img = Image.open(BytesIO(raw_bytes))
+
+        # hashes
+        sha1_hex = _sha1_bytes(raw_bytes)
+        im_small_for_hash = img.copy()
+        im_small_for_hash.thumbnail((256, 256), Image.LANCZOS)
+        dhash_hex = _img_dhash(im_small_for_hash)
+
+        # métricas + redimensiona
+        quality = medir_qualidade(img)
+        img = redimensionar(img, max_w, max_h)
+
+        # efeitos opcionais
+        need_alpha = bool(fx_cfg and (fx_cfg.get("fx_shadow") or fx_cfg.get("fx_round") or fx_cfg.get("fx_border")))
+        if need_alpha:
+            img_rgba = apply_effects_pipeline(img.convert("RGB"), fx_cfg)
+        else:
+            img_rgba = img.convert("RGBA")
+
+        # Salvar em disco
+        if need_alpha:
+            buf = BytesIO(); img_rgba.save(buf, format="PNG", optimize=True)
+            if buf.tell() / 1024 <= limite_kb:
+                path = _save_bytes_to_tmp("png", buf.getvalue())
+                w, h = img_rgba.size
+                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+
+            pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
+            buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
+            if buf.tell() / 1024 <= limite_kb:
+                path = _save_bytes_to_tmp("png", buf.getvalue())
+                w, h = img_rgba.size
+                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+
+            bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
+            bg.paste(img_rgba, mask=img_rgba.split()[-1])
+            buf = comprimir_jpeg_binsearch(bg, limite_kb)
+            path = _save_bytes_to_tmp("jpg", buf.getvalue())
+            w, h = bg.size
+            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+        else:
+            buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
+            path = _save_bytes_to_tmp("jpg", buf.getvalue())
+            w, h = img.size
+            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+
+    except requests.exceptions.Timeout:
+        logger.warning(f"Timeout ao baixar: {url}")
+        return (url, False, None, None, None)
+    except Exception as e:
+        logger.warning(f"Falha ao processar {url}: {e}")
+        return (url, False, None, None, None)
+    finally:
+        try:
+            del img
+        except Exception:
+            pass
+        gc.collect()
+
+
+# === PARTE 7/10 =====================================================
+# ZIP de imagens + PPT com modelo (capa/final)
+
+def _path_to_jpeg_bytes(file_path: str) -> bytes:
+    try:
+        im = Image.open(file_path)
+        fmt = (im.format or "").upper()
+        if fmt in ("JPEG", "JPG"):
+            with open(file_path, "rb") as f:
+                return f.read()
+        if im.mode in ("RGBA", "LA"):
+            bg = Image.new("RGB", im.size, (255, 255, 255))
+            bg.paste(im, mask=im.split()[-1])
+            im = bg
+        else:
+            im = im.convert("RGB")
+        out = BytesIO()
+        im.save(out, "JPEG", quality=88, optimize=True, progressive=True, subsampling=2)
+        out.seek(0)
+        return out.read()
+    except Exception as e:
+        logger.warning(f"_path_to_jpeg_bytes fallback: {e}")
+        try:
+            with open(file_path, "rb") as f:
+                return f.read()
+        except:
+            return b""
+
+def _sanitize_folder_name(name: str) -> str:
+    safe = re.sub(r'[\\/:*?"<>|]+', ' ', str(name or "").strip())
+    safe = re.sub(r'\s+', ' ', safe)
+    return safe[:80] if len(safe) > 80 else safe
+
+def montar_zip_imagens(items, resultados, excluded_urls: set) -> BytesIO:
+    grupos = OrderedDict()
+    for loja, endereco, url in items:
+        if (url in resultados) and (url not in excluded_urls):
+            grupos.setdefault(str(loja), []).append((url, resultados[url]))
+
+    mem_zip = BytesIO()
+    with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+        for loja, lista in grupos.items():
+            pasta = _sanitize_folder_name(loja) or "Sem Nome"
+            contador = 1
+            for _url, (_loja, _end, file_path, (w, h), *_) in lista:
+                jpeg_bytes = _path_to_jpeg_bytes(file_path)
+                arquivo = f"{pasta} - {contador}.jpg"
+                caminho = f"{pasta}/{arquivo}"
+                try:
+                    zf.writestr(caminho, jpeg_bytes)
+                except Exception as e:
+                    logger.warning(f"Falha ao escrever {caminho} no ZIP: {e}")
+                contador += 1
+    mem_zip.seek(0)
+    return mem_zip
+
+def gerar_ppt_modelo_capa_final(
+    template_bytes: bytes,
+    items, resultados, titulo,
+    max_per_slide, sort_mode, bg_rgb,
+    logo_bytes=None, logo_width_in=1.2,
+    signature_bytes=None, signature_width_in=None, auto_half_signature=True,
+    signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
+    title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
+    title_font_color_rgb=(0,0,0),
+    excluded_urls=None
+):
+    excluded_urls = excluded_urls or set()
+    prs = Presentation(BytesIO(template_bytes))
+    logger.info(f"Template carregado: {len(prs.slides)} slides (esperado: 2 – capa e final)")
+
+    final_idx = 1 if len(prs.slides) >= 2 else None
+    blank_layout = prs.slide_layouts[6] if len(prs.slide_layouts) > 6 else prs.slide_layouts[0]
+
+    groups = OrderedDict()
+    for loja, endereco, url in items:
+        if url in resultados and url not in excluded_urls:
+            groups.setdefault(str(loja), []).append((url, resultados[url]))
+
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(groups.keys(), key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold()))
+    else:
+        loja_keys = list(groups.keys())
+
+    title_rgb = title_font_color_rgb if title_font_color_rgb else pick_contrast_color(*bg_rgb)
+    signature_width = (logo_width_in/2.0) if auto_half_signature else (signature_width_in or 0.6)
+
+    for loja in loja_keys:
+        imgs = groups[loja]
+        i = 0
+        while i < len(imgs):
+            if max_per_slide == "Automático":
+                _url0, (_loja0, endereco, _file0, (w0, h0), *_r0) = imgs[i]
+                per_slide = 3 if is_portrait(w0, h0) else 2
+            else:
+                endereco = imgs[i][1][1]
+                per_slide = int(max_per_slide)
+
+            batch = imgs[i:i+per_slide]
+            i += per_slide
+            slide = prs.slides.add_slide(blank_layout)
+            set_slide_bg(slide, bg_rgb)
+            add_title_and_address(slide, loja, endereco, title_rgb,
+                                  title_font_name, title_font_size_pt, title_font_bold)
+            if logo_bytes:
+                add_logo_top_right(slide, prs, logo_bytes, logo_width_in or 1.2)
+            if signature_bytes:
+                add_signature_bottom_right(
+                    slide, prs, signature_bytes, signature_width,
+                    bottom_margin_in=signature_bottom_margin_in,
+                    right_margin_in=signature_right_margin_in
+                )
+            slots = get_slots(len(batch), prs)
+            for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), (left, top, max_w_in, max_h_in) in zip(batch, slots):
+                try:
+                    place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in)
+                except Exception as e:
+                    logger.warning(f"Falha ao inserir imagem no slide ({url}): {e}")
+
+    if final_idx is not None and final_idx < len(prs.slides):
+        try:
+            move_slide_to_index(prs, final_idx, len(prs.slides)-1)
+        except Exception as e:
+            logger.warning(f"Não foi possível mover o slide final: {e}")
+
+    out = BytesIO()
+    prs.save(out)
+    out.seek(0)
+    logger.info("PPT com modelo gerado com sucesso.")
+    return out
+
+# === PARTE 8/10 =====================================================
+# Prévia de slides — composição PIL + batching
+
+def _get_slots_px(n, canvas_w=1280, canvas_h=720):
+    IMG_TOP = int(1.2 * 96)
+    CONTENT_W = int(11 * 96)
+    CONTENT_H = int(6 * 96)
+    GAP = int(0.2 * 96)
+    start_left = (canvas_w - CONTENT_W) // 2
+    if n == 1:
+        return [(start_left, IMG_TOP, CONTENT_W, CONTENT_H)]
+    cols = n
+    total_gap = GAP * (cols - 1)
+    cell_w = (CONTENT_W - total_gap) // cols
+    return [(start_left + c*(cell_w+GAP), IMG_TOP, cell_w, CONTENT_H) for c in range(cols)]
+
+def _paste_fit(canvas: Image.Image, im: Image.Image, slot):
+    left, top, max_w, max_h = slot
+    w, h = im.size
+    if w <= 0 or h <= 0:
+        logger.warning("Imagem com dimensão inválida para prévia.")
+        return
+    ratio = min(max_w/float(w), max_h/float(h), 1.0)
+    new_w = max(1, int(w*ratio))
+    new_h = max(1, int(h*ratio))
+    im2 = im.resize((new_w, new_h), Image.LANCZOS)
+    x = left + (max_w - new_w)//2
+    y = top + (max_h - new_h)//2
+    canvas.paste(im2, (x, y))
+
+def compose_slide_preview(batch, loja, endereco, cfg, canvas_w=1280, canvas_h=720):
+    bg = cfg["bg_rgb"]
+    title_rgb = cfg.get("title_font_color_rgb", pick_contrast_color(*bg))
+    canvas = Image.new("RGB", (canvas_w, canvas_h), bg)
+
+    try:
+        font = ImageFont.truetype("arial.ttf", 28)
+        font2 = ImageFont.truetype("arial.ttf", 16)
+    except Exception:
+        font = ImageFont.load_default()
+        font2 = ImageFont.load_default()
+
+    draw = ImageDraw.Draw(canvas)
+    title = str(loja)
+
+    try:
+        _, _, w_title, h_title = draw.textbbox((0, 0), title, font=font)
+    except Exception:
+        w_title, h_title = 0, 0
+    draw.text(((canvas_w - w_title)//2, 16), title, fill=title_rgb, font=font)
+
+    if endereco:
+        try:
+            _, _, w_addr, h_addr = draw.textbbox((0, 0), endereco, font=font2)
+        except Exception:
+            w_addr, h_addr = 0, 0
+        draw.text(((canvas_w - w_addr)//2, 16 + h_title + 6), endereco, fill=title_rgb, font=font2)
+
+    slots = _get_slots_px(len(batch), canvas_w, canvas_h)
+    for (url, (_loja, _end, file_path, (w_px, h_px), *rest)), slot in zip(batch, slots):
+        try:
+            im = _open_img_from_path(file_path).convert("RGB")
+            _paste_fit(canvas, im, slot)
+        except Exception as e:
+            logger.warning(f"Falha ao compor imagem na prévia ({url}): {e}")
+            l, t, sw, sh = slot
+            draw.rectangle([l, t, l+sw, t+sh], outline=(200,0,0), width=3)
+            draw.line([l, t, l+sw, t+sh], fill=(200,0,0), width=3)
+            draw.line([l+sw, t, l, t+sh], fill=(200,0,0), width=3)
+
+    return canvas
+
+def build_batches_for_preview(items, resultados, cfg, excluded_urls):
+    groups = OrderedDict()
+    for loja, endereco, url in items:
+        if url in resultados and url not in excluded_urls:
+            groups.setdefault(str(loja), []).append((url, resultados[url]))
+
+    if cfg["sort_mode"] == "Nome da loja (A→Z)":
+        loja_keys = sorted(
+            groups.keys(),
+            key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold())
+        )
+    else:
+        loja_keys = list(groups.keys())
+
+    batches = []
+    for loja in loja_keys:
+        imgs = groups[loja]
+        i = 0
+        while i < len(imgs):
+            if cfg["max_per_slide"] == "Automático":
+                _url0, (_loja0, end0, _file0, (w0, h0), *_r0) = imgs[i]
+                per_slide = 3 if is_portrait(w0, h0) else 2
+            else:
+                end0 = imgs[i][1][1]
+                per_slide = int(cfg["max_per_slide"])
+            batch = imgs[i:i+per_slide]
+            i += per_slide
+            batches.append((loja, end0, batch))
+    return batches
+
+# === PARTE 9/10 =====================================================
+# UI de miniaturas + detecção + reset
+
+def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, border_color: str):
+    im = image.copy()
+    im.thumbnail((width_px, width_px))
+    buf = BytesIO()
+    im.save(buf, format="PNG")
+    b64 = base64.b64encode(buf.getvalue()).decode("utf-8")
+    style = (
+        f"border:{border_px}px solid {border_color};"
+        f"border-radius:10px;display:block;max-width:100%;width:{width_px}px;"
+    )
+    return f'<img src="data:image/png;base64,{b64}" style="{style}" />'
+
+def render_steps(current: int):
+    labels = ["Upload", "Pré-visualização", "Gerar/Exportar"]
+    html = ['<div class="steps">']
+    for i, txt in enumerate(labels, start=1):
+        cls = "step active" if i == current else "step"
+        html.append(f'<div class="{cls}">{i}. {txt}</div>')
+        if i < len(labels):
+            html.append('<span class="step sep">›</span>')
+    html.append("</div>")
+    st.markdown("".join(html), unsafe_allow_html=True)
+
+def render_summary(items, resultados, excluded):
+    total_urls = len(items)
+    baixadas = sum(1 for _, _, url in items if url in resultados)
+    lojas = len({loja for loja, _, _ in items})
+    st.markdown(
+        f"**Resumo:** "
+        f"<span class='badge'>Lojas: {lojas}</span> "
+        f"<span class='badge'>Links: {total_urls}</span> "
+        f"<span class='badge'>Baixadas: {baixadas}</span> "
+        f"<span class='badge'>Excluídas: {len(excluded)}</span>",
+        unsafe_allow_html=True
+    )
+
+def _cb_select_all(loja, imgs):
+    excluded = st.session_state.excluded_urls
+    for url, _ in imgs:
+        excluded.add(url)
+    st.rerun()
+
+def _cb_clear_group(loja, imgs):
+    excluded = st.session_state.excluded_urls
+    for url, _ in imgs:
+        excluded.discard(url)
+    st.rerun()
+
+def render_preview(items, resultados, sort_mode, thumb_px: int, thumbs_per_row: int):
+    if "excluded_urls" not in st.session_state:
+        st.session_state.excluded_urls = set()
+    if "expanded_groups" not in st.session_state:
+        st.session_state.expanded_groups = {}
+
+    excluded = st.session_state.excluded_urls
+    expanded_groups = st.session_state.expanded_groups
+
+    groups = OrderedDict()
+    for loja, endereco, url in items:
+        if url in resultados:
+            groups.setdefault(str(loja), []).append((url, resultados[url]))
+
+    if sort_mode == "Nome da loja (A→Z)":
+        loja_keys = sorted(
+            groups.keys(),
+            key=lambda s: (s is None or str(s).strip()== "", (s or "").strip().casefold())
+        )
+    else:
+        loja_keys = list(groups.keys())
+
+    low_q = set(st.session_state.get("low_quality_urls", []))
+    dups = set(st.session_state.get("duplicate_urls", []))
+
+    c0a, c0b = st.columns([1,1])
+    with c0a:
+        if st.button(
+            f"⚠️ Excluir todas de BAIXA QUALIDADE ({len(low_q)})",
+            type="secondary", use_container_width=True, disabled=(len(low_q)==0)
+        ):
+            st.session_state.excluded_urls.update(low_q)
+            st.rerun()
+    with c0b:
+        if st.button(
+            f"🔁 Excluir todas DUPLICADAS ({len(dups)})",
+            type="secondary", use_container_width=True, disabled=(len(dups)==0)
+        ):
+            st.session_state.excluded_urls.update(dups)
+            st.rerun()
+
+    c1, c2, c3, c4 = st.columns([1,1,1,1])
+    with c1:
+        if st.button("🧹 Limpar todas as exclusões", type="secondary", use_container_width=True):
+            excluded.clear()
+            st.rerun()
+    with c2:
+        if st.button("🔁 Inverter seleção", type="secondary", use_container_width=True):
+            all_urls = {url for _, v in groups.items() for (url, _) in v}
+            st.session_state.excluded_urls = all_urls - excluded
+            st.rerun()
+    with c3:
+        if st.button("➕ Expandir todas", type="secondary", use_container_width=True):
+            for loja in loja_keys:
+                expanded_groups[loja] = True
+            st.rerun()
+    with c4:
+        if st.button("➖ Recolher todas", type="secondary", use_container_width=True):
+            for loja in loja_keys:
+                expanded_groups[loja] = False
+            st.rerun()
+
+    st.caption(f"Excluídas até agora: **{len(excluded)}**")
+
+    for loja in loja_keys:
+        imgs = groups[loja]
+        key_toggle = f"tg_{hash(loja)}"
+        current_state = expanded_groups.get(loja, True)
+
+        st.markdown(
+            f"""<div class="group-head">
+                <div><strong>📄 {loja}</strong> — {len(imgs)} foto(s)</div>
+                <div class="badge">{'Aberto' if current_state else 'Fechado'}</div>
+            </div>""",
+            unsafe_allow_html=True
+        )
+        new_state = st.toggle("Manter este grupo visível", value=current_state, key=key_toggle)
+        expanded_groups[loja] = bool(new_state)
+
+        gc1, gc2 = st.columns([1,1])
+        with gc1:
+            st.button(
+                f"Selecionar todas de {loja}",
+                key=f"sel_all_{hash(loja)}",
+                use_container_width=True,
+                on_click=_cb_select_all,
+                args=(loja, imgs)
+            )
+        with gc2:
+            st.button(
+                f"Limpar seleção de {loja}",
+                key=f"clr_sel_{hash(loja)}",
+                use_container_width=True,
+                on_click=_cb_clear_group,
+                args=(loja, imgs)
+            )
+
+        if expanded_groups[loja]:
+            cols = st.columns(thumbs_per_row)
+            col_idx = 0
+            for (url, (_loja, _end, file_path, (w_px, h_px), *rest)) in imgs:
+                with cols[col_idx]:
+                    try:
+                        im = _open_img_from_path(file_path)
+                    except Exception:
+                        st.warning("Não foi possível pré-visualizar esta imagem.")
+                        col_idx = (col_idx + 1) % thumbs_per_row
+                        continue
+
+                    is_excluded = url in excluded
+                    border_px = 3 if is_excluded else 1
+                    border_color = "#E53935" if is_excluded else "#DDDDDD"
+                    st.markdown('<div class="img-card">', unsafe_allow_html=True)
+                    st.markdown(
+                        img_to_html_with_border(im, thumb_px, border_px, border_color),
+                        unsafe_allow_html=True
+                    )
+
+                    badges = []
+                    if url in low_q:
+                        badges.append("<span class='badge' style='background:#FDECEA;color:#B71C1C'>Baixa qualidade</span>")
+                    if url in dups:
+                        badges.append("<span class='badge' style='background:#FFF8E1;color:#E65100'>Possível duplicata</span>")
+                    if badges:
+                        st.markdown(" ".join(badges), unsafe_allow_html=True)
+
+                    key = "ex_" + hashlib.md5(url.encode("utf-8")).hexdigest()
+                    checked = st.checkbox("Excluir esta foto", key=key, value=is_excluded)
+                    if checked:
+                        excluded.add(url)
+                    else:
+                        excluded.discard(url)
+                    st.markdown('</div>', unsafe_allow_html=True)
+                col_idx = (col_idx + 1) % thumbs_per_row
+        st.divider()
+
+def detectar_problemas(resultados, min_mp=0.8, min_blur=45):
+    low_quality = set()
+    by_sha1, by_dhash = {}, {}
+    for url, tup in resultados.items():
+        loja, endereco, file_path, (w, h), quality, sha1_hex, dhash_hex = tup
+        if (quality.get("megapixels", 0) < min_mp) or (quality.get("blur_score", 0) < min_blur):
+            low_quality.add(url)
+        by_sha1.setdefault(sha1_hex, []).append(url)
+        by_dhash.setdefault(dhash_hex, []).append(url)
+
+    duplicates = set()
+    for group in by_sha1.values():
+        if len(group) > 1:
+            duplicates.update(group[1:])
+    for group in by_dhash.values():
+        if len(group) > 1:
+            duplicates.update([u for u in group[1:] if u not in duplicates])
+
+    logger.info(f"detectar_problemas: low={len(low_quality)} dup={len(duplicates)}")
+    return low_quality, duplicates
+
+def reset_app(preserve_login: bool = True):
+    user = st.session_state.get("user_email")
+    auth = st.session_state.get("auth", False)
+
+    st.session_state.clear()
+
+    st.session_state.xlsx_key = 0
+    st.session_state.template_key = 0
+    st.session_state.logo_key = 0
+    st.session_state.sign_key = 0
+    st.session_state.download_key = 0
+    st.session_state.images_zip_key = 0
+
+    st.session_state.exp_plan = True
+    st.session_state.exp_style = False
+    st.session_state.exp_brand = False
+    st.session_state.exp_fx = False
+    st.session_state.exp_perf = False
+    st.session_state.exp_model = False
+
+    st.session_state.ppt_bytes = None
+    st.session_state.images_zip_bytes = None
+    st.session_state.generated = False
+    st.session_state.output_filename = "Modelo_01"
+
+    if preserve_login and auth:
+        st.session_state.auth = True
+        st.session_state.user_email = user
+        st.session_state.dark_mode = False
+    st.rerun()
+
 # === PARTE 10/10 ====================================================
-# APP (main_app) + Roteamento final - MODIFICADO E CORRIGIDO
+# APP (main_app) + Roteamento final - MODIFICADO
 
 def main_app():
     # Inicializações seguras
@@ -23,10 +996,8 @@ def main_app():
     if "images_zip_bytes" not in st.session_state: st.session_state.images_zip_bytes = None
     if "preview_bump" not in st.session_state: st.session_state.preview_bump = 0
     if "failed_urls" not in st.session_state: st.session_state.failed_urls = []
-    if "failed_details" not in st.session_state: st.session_state.failed_details = []
     if "url_line_map" not in st.session_state: st.session_state.url_line_map = {}
     if "quick_generate" not in st.session_state: st.session_state.quick_generate = False
-    if "ignore_failed" not in st.session_state: st.session_state.ignore_failed = True
 
     with st.sidebar:
         st.header("⚙️ Preferências")
@@ -97,14 +1068,6 @@ def main_app():
             border_width = st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
 
         with st.expander("⚡ Performance & Qualidade", expanded=st.session_state.exp_perf):
-            # NOVO CAMPO: Comportamento em caso de falha
-            ignore_failed = st.checkbox(
-                "⚠️ Ignorar falhas e continuar gerando", 
-                value=True, 
-                key="ignore_failed",
-                help="Quando ativado, as fotos que falharam no download serão puladas e o book será gerado apenas com as que funcionaram."
-            )
-            
             thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
             thumbs_per_row = st.slider("Miniaturas por linha", 2, 8, 4, 1, key="thumbs_per_row")
             st.caption("Redimensionamento / compressão")
@@ -147,9 +1110,7 @@ def main_app():
         st.markdown('</div>', unsafe_allow_html=True)
 
     # 1) Upload - MODIFICADO: Botões separados
-    upload_expander = st.expander("1. Upload", expanded=not st.session_state.preview_mode)
-    
-    with upload_expander:
+    with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
         up = st.file_uploader("Selecione a planilha (.xlsx)", type=["xlsx"], key=f"xlsx_upload_{st.session_state.xlsx_key}")
         
         if up:
@@ -223,12 +1184,6 @@ def main_app():
                         st.warning("Nenhuma URL de imagem encontrada.")
                         st.stop()
 
-                    # Aviso sobre o modo de falha
-                    if st.session_state.get("ignore_failed", True):
-                        st.info("ℹ️ **Modo: Ignorar falhas ativado** - O sistema continuará mesmo se algumas imagens falharem.")
-                    else:
-                        st.warning("⚠️ **Modo: Parar em caso de falha** - O sistema parará se alguma imagem falhar.")
-
                     st.info(f"Baixando e processando **{total}** imagem(ns)...")
                     session = requests.Session()
                     adapter = requests.adapters.HTTPAdapter(
@@ -256,7 +1211,6 @@ def main_app():
                     status = st.empty()
                     resultados, falhas, done = {}, 0, 0
                     failed_urls = []
-                    failed_details = []
 
                     with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
                         futures = {
@@ -265,120 +1219,49 @@ def main_app():
                                 st.session_state["target_w"], st.session_state["target_h"],
                                 st.session_state["limite_kb"], st.session_state["req_timeout"],
                                 fx_cfg
-                            ): (loja, endereco, url, url_line_map.get(url, "?"))
+                            ): (loja, endereco, url)
                             for loja, endereco, url in items
                         }
                         for fut in as_completed(futures):
-                            loja, endereco, url, line_no = futures[fut]
+                            loja, endereco, url = futures[fut]
                             try:
                                 res = fut.result()
                             except Exception as e:
                                 logger.error(f"Erro em download {url}: {e}")
-                                res = (url, False, None, None, None, None, None, f"Exception: {e}")
+                                res = (url, False, None, None, None)
 
                             if res and isinstance(res, (list, tuple)) and len(res) >= 2 and res[1] is True:
-                                # Sucesso
                                 url_key = res[0]
                                 file_path = res[2] if len(res) > 2 else None
-                                wh = res[3] if len(res) > 3 else (0, 0)
+                                wh      = res[3] if len(res) > 3 else (0, 0)
                                 quality = res[4] if len(res) > 4 else {}
-                                sha1_hex = res[5] if len(res) > 5 else ""
+                                sha1_hex  = res[5] if len(res) > 5 else ""
                                 dhash_hex = res[6] if len(res) > 6 else ""
 
                                 if (not file_path) or (not wh) or (not isinstance(wh, (list, tuple))):
                                     falhas += 1
                                     failed_urls.append(url)
-                                    error_msg = res[7] if len(res) > 7 else "Erro desconhecido"
-                                    failed_details.append({
-                                        "url": url,
-                                        "loja": loja,
-                                        "linha": line_no,
-                                        "erro": error_msg
-                                    })
                                 else:
                                     resultados[url_key] = (loja, endereco, file_path, wh, quality, sha1_hex, dhash_hex)
                             else:
-                                # Falha
                                 falhas += 1
                                 failed_urls.append(url)
-                                error_msg = res[7] if len(res) > 7 else "Erro desconhecido" if len(res) > 7 else "Erro desconhecido"
-                                failed_details.append({
-                                    "url": url,
-                                    "loja": loja,
-                                    "linha": line_no,
-                                    "erro": error_msg
-                                })
 
                             done += 1
                             prog.progress(int(done * 100 / total))
-                            status.write(f"Processadas {done}/{total} imagens... (Falhas: {falhas})")
+                            status.write(f"Processadas {done}/{total} imagens...")
 
                     status.write(f"Concluído. Falhas: {falhas}")
 
-                    # Salvar informações de falha
                     st.session_state.failed_urls = failed_urls
-                    st.session_state.failed_details = failed_details
                     st.session_state.url_line_map = url_line_map
 
-                    # Verificar se há falhas e se devemos continuar
-                    if falhas > 0:
-                        if not st.session_state.get("ignore_failed", True):
-                            st.error(f"{falhas} imagem(ns) falharam. Desative 'Ignorar falhas' na sidebar se quiser parar.")
-                            st.stop()
-                        else:
-                            st.warning(f"{falhas} imagem(ns) foram puladas por erro, mas continuando com as {len(resultados)} restantes.")
-                            
-                            # CORREÇÃO: Criar um container para as falhas sem usar expander dentro de expander
-                            if failed_details:
-                                # Usar uma div expansível personalizada ou simplesmente mostrar os dados
-                                st.markdown(f"**📋 {len(failed_details)} Imagem(ns) com erro:**")
-                                
-                                # Criar DataFrame para melhor visualização
-                                df_failed = pd.DataFrame(failed_details)
-                                
-                                # Ordenar por linha
-                                if 'linha' in df_failed.columns:
-                                    try:
-                                        df_failed['linha_num'] = pd.to_numeric(df_failed['linha'], errors='coerce')
-                                        df_failed = df_failed.sort_values('linha_num')
-                                        df_failed = df_failed.drop(columns=['linha_num'])
-                                    except:
-                                        df_failed = df_failed.sort_values('linha')
-                                
-                                # Exibir tabela com scroll
-                                container = st.container()
-                                with container:
-                                    st.dataframe(
-                                        df_failed,
-                                        column_config={
-                                            "linha": "Linha",
-                                            "loja": "Loja",
-                                            "url": st.column_config.LinkColumn("URL"),
-                                            "erro": "Erro"
-                                        },
-                                        hide_index=True,
-                                        use_container_width=True,
-                                        height=min(300, 35 * min(10, len(failed_details)))
-                                    )
-                                    
-                                    # Botão para copiar lista
-                                    col1, col2 = st.columns(2)
-                                    with col1:
-                                        if st.button("📋 Copiar lista de falhas", key="copy_failed_list"):
-                                            text_to_copy = "\n".join([f"Linha {d['linha']}: {d['url']} - {d['erro']}" 
-                                                                     for d in failed_details])
-                                            st.code(text_to_copy, language="text")
-                                            st.success("Lista copiada para a área de transferência!")
-                                    with col2:
-                                        if st.button("📁 Exportar falhas (CSV)", key="export_failed_csv"):
-                                            csv = df_failed.to_csv(index=False).encode('utf-8')
-                                            st.download_button(
-                                                label="Baixar CSV",
-                                                data=csv,
-                                                file_name="falhas_download.csv",
-                                                mime="text/csv",
-                                                key="download_failed_csv"
-                                            )
+                    if failed_urls:
+                        with st.expander("⚠️ Imagens puladas por erro (clique para ver)", expanded=False):
+                            for u in failed_urls[:200]:
+                                st.write(f"- Linha {url_line_map.get(u, '?')}: {u}")
+                            if len(failed_urls) > 200:
+                                st.caption(f"... e mais {len(failed_urls) - 200} itens.")
 
                     low_q, dups = detectar_problemas(
                         resultados,
@@ -414,7 +1297,6 @@ def main_app():
                                 if (st.session_state.get("use_template") and template_file) else None,
                             "low_quality_urls": list(low_q),
                             "duplicate_urls": list(dups),
-                            "ignore_failed": st.session_state.get("ignore_failed", True),
                         }
                     }
 
@@ -440,70 +1322,20 @@ def main_app():
 
     # 2) Pré-visualização - MODIFICADO: Condicional mais inteligente
     if st.session_state.preview_mode and st.session_state.pipeline and not st.session_state.quick_generate:
-        preview_expander = st.expander("2. Pré-visualização", expanded=True)
-        
-        with preview_expander:
+        with st.expander("2. Pré-visualização", expanded=True):
             p = st.session_state.pipeline
 
-            # Mostrar estatísticas
-            stats = render_summary(p["items"], p["resultados"], st.session_state.excluded_urls, st.session_state.get("failed_details", []))
-            
-            # Aviso se houver falhas
-            if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
-                st.info(f"""
-                ⚠️ **Atenção:** {len(st.session_state.failed_details)} imagem(ns) falharam no download.
-                O book será gerado apenas com as {stats['baixadas']} imagens que foram baixadas com sucesso.
-                """)
-                
-                # Opção para ver detalhes das falhas - CORREÇÃO: Usar checkbox para controlar visibilidade
-                show_failed_details = st.checkbox("Mostrar detalhes das falhas", key="show_failed_details")
-                
-                if show_failed_details and st.session_state.failed_details:
-                    st.markdown("---")
-                    st.markdown(f"**📋 Detalhes das {len(st.session_state.failed_details)} falhas:**")
-                    
-                    df_failed = pd.DataFrame(st.session_state.failed_details)
-                    if 'linha' in df_failed.columns:
-                        try:
-                            df_failed['linha_num'] = pd.to_numeric(df_failed['linha'], errors='coerce')
-                            df_failed = df_failed.sort_values('linha_num')
-                            df_failed = df_failed.drop(columns=['linha_num'])
-                        except:
-                            df_failed = df_failed.sort_values('linha')
-                    
-                    # Exibir tabela com altura limitada
-                    st.dataframe(
-                        df_failed,
-                        column_config={
-                            "linha": "Linha",
-                            "loja": "Loja",
-                            "url": st.column_config.LinkColumn("URL"),
-                            "erro": "Erro"
-                        },
-                        hide_index=True,
-                        use_container_width=True,
-                        height=min(400, 35 * min(15, len(st.session_state.failed_details)))
-                    )
-                    
-                    # Botões de ação
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("📋 Copiar lista", key="copy_failed_preview"):
-                            text_to_copy = "\n".join([f"Linha {d['linha']}: {d['url']} - {d['erro']}" 
-                                                     for d in st.session_state.failed_details])
-                            st.code(text_to_copy, language="text")
-                            st.success("Lista copiada para a área de transferência!")
-                    with col2:
-                        if st.button("📁 Exportar CSV", key="export_failed_preview"):
-                            csv = df_failed.to_csv(index=False).encode('utf-8')
-                            st.download_button(
-                                label="Baixar CSV",
-                                data=csv,
-                                file_name="falhas_detalhadas.csv",
-                                mime="text/csv",
-                                key="download_failed_preview"
-                            )
+            if st.session_state.get("failed_urls"):
+                failed_urls = st.session_state.failed_urls
+                url_line_map = st.session_state.url_line_map
+                st.warning(f"{len(failed_urls)} imagem(ns) foram puladas por erro de download/processamento.")
+                with st.expander("Ver URLs com a linha da planilha", expanded=False):
+                    for u in failed_urls[:200]:
+                        st.write(f"- Linha {url_line_map.get(u, '?')}: {u}")
+                    if len(failed_urls) > 200:
+                        st.caption(f"... e mais {len(failed_urls) - 200} itens.")
 
+            render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
             render_preview(
                 p["items"], p["resultados"],
                 p["settings"]["sort_mode"],
@@ -513,27 +1345,18 @@ def main_app():
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT/ZIP. Depois, avance para a etapa 3.")
 
     # 3) Gerar / Exportar - MODIFICADO: Lógica otimizada
-    generate_expander = st.expander("3. Gerar / Exportar", expanded=st.session_state.get("preview_mode", False) or st.session_state.get("quick_generate", False))
-    
-    with generate_expander:
+    with st.expander("3. Gerar / Exportar", expanded=st.session_state.get("preview_mode", False) or st.session_state.get("quick_generate", False)):
         if not st.session_state.pipeline:
             st.info("Faça o upload da planilha e processe as imagens primeiro.")
         else:
             cfg = st.session_state.pipeline["settings"]
             items = st.session_state.pipeline["items"]
             resultados = st.session_state.pipeline["resultados"]
-            
-            # Mostrar estatísticas
-            stats = render_summary(items, resultados, st.session_state.excluded_urls, st.session_state.get("failed_details", []))
 
             # GERAÇÃO DIRETA SE SOLICITADA
             if st.session_state.quick_generate and not st.session_state.get("ppt_bytes"):
                 with st.spinner("🚀 Gerando PPT diretamente..."):
                     try:
-                        # Aviso se houver falhas
-                        if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
-                            st.info(f"ℹ️ Gerando com {stats['falhas']} falha(s) ignorada(s). Total de imagens no book: {stats['baixadas']}")
-                        
                         titulo = (st.session_state.output_filename or "Apresentacao").strip()
                         use_template = cfg.get("use_template", False)
                         template_bytes = cfg.get("template_bytes")
@@ -554,8 +1377,7 @@ def main_app():
                                 title_font_size_pt=cfg["title_font_size_pt"],
                                 title_font_bold=cfg["title_font_bold"],
                                 title_font_color_rgb=cfg.get("title_font_color_rgb", (0,0,0)),
-                                excluded_urls=st.session_state.excluded_urls,
-                                ignore_failed=cfg.get("ignore_failed", True)
+                                excluded_urls=st.session_state.excluded_urls
                             )
                         else:
                             prs = Presentation()
@@ -606,7 +1428,7 @@ def main_app():
                         st.session_state.ppt_bytes = ppt_bytes
                         st.session_state.generated = True
                         st.session_state.quick_generate = False
-                        st.success(f"✅ PPT gerado com sucesso! Total de slides gerados: {len(groups)} lojas processadas.")
+                        st.success("✅ PPT gerado com sucesso!")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao gerar PPT")
@@ -734,10 +1556,6 @@ def main_app():
                 # Geração do PPT (apenas para fluxo de visualização)
                 if (not st.session_state.get("ppt_bytes")) and ('btn_generate' in locals()) and btn_generate and not st.session_state.quick_generate:
                     try:
-                        # Aviso se houver falhas
-                        if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
-                            st.info(f"ℹ️ Gerando com {stats['falhas']} falha(s) ignorada(s). Total de imagens no book: {stats['baixadas']}")
-                        
                         titulo = (st.session_state.output_filename or "Apresentacao").strip()
                         use_template = cfg.get("use_template", False)
                         template_bytes = cfg.get("template_bytes")
@@ -758,8 +1576,7 @@ def main_app():
                                 title_font_size_pt=cfg["title_font_size_pt"],
                                 title_font_bold=cfg["title_font_bold"],
                                 title_font_color_rgb=cfg.get("title_font_color_rgb", (0,0,0)),
-                                excluded_urls=st.session_state.excluded_urls,
-                                ignore_failed=cfg.get("ignore_failed", True)
+                                excluded_urls=st.session_state.excluded_urls
                             )
                         else:
                             prs = Presentation()
@@ -809,7 +1626,6 @@ def main_app():
 
                         st.session_state.ppt_bytes = ppt_bytes
                         st.session_state.generated = True
-                        st.success(f"✅ PPT gerado com sucesso! Total de slides gerados: {len(groups)} lojas processadas.")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao gerar PPT")
@@ -824,7 +1640,6 @@ def main_app():
                             excluded_urls=st.session_state.excluded_urls
                         )
                         st.session_state.images_zip_bytes = zip_bytes
-                        st.success(f"✅ ZIP gerado com sucesso! Total de imagens incluídas: {sum(1 for url in resultados if url not in st.session_state.excluded_urls)}")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao montar ZIP")
@@ -837,3 +1652,5 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
+
+
