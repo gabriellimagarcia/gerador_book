@@ -61,6 +61,51 @@ BASE_CSS = """
 .reset-zone, .logout-zone {margin-top:.5rem;}
 .quick-actions {display: flex; gap: 10px; margin: 10px 0;}
 .quick-actions button {flex: 1;}
+
+/* Estatísticas */
+.stats-container {
+    background:#f8f9fa; 
+    padding:12px 15px; 
+    border-radius:8px; 
+    margin:10px 0;
+    border-left:4px solid #FF7A00;
+}
+.stats-title {
+    font-weight:600; 
+    margin-bottom:8px;
+    color:#333;
+}
+.stats-grid {
+    display:flex; 
+    gap:12px; 
+    flex-wrap:wrap;
+}
+.stats-badge {
+    padding:6px 12px;
+    border-radius:6px;
+    font-size:13px;
+    font-weight:500;
+}
+.stats-success {
+    background:#d4edda;
+    color:#155724;
+    border:1px solid #c3e6cb;
+}
+.stats-error {
+    background:#f8d7da;
+    color:#721c24;
+    border:1px solid #f5c6cb;
+}
+.stats-warning {
+    background:#fff3cd;
+    color:#856404;
+    border:1px solid #ffeaa7;
+}
+.stats-info {
+    background:#d1ecf1;
+    color:#0c5460;
+    border:1px solid #bee5eb;
+}
 </style>
 """
 st.markdown(BASE_CSS, unsafe_allow_html=True)
@@ -424,7 +469,7 @@ def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_wid
 
 # -------------------------------------------------------------------
 # DOWNLOAD & PROCESS (salva em /tmp e retorna file_path)
-#   -> SUCCESS: (url, True, file_path, (w,h), quality, sha1_hex, dhash_hex)
+#   -> SUCCESS: (url, True, file_path, (w,h), quality, sha1_hex, dhash_hex, error_msg)
 # -------------------------------------------------------------------
 def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, timeout: int, fx_cfg: dict = None):
     try:
@@ -432,12 +477,12 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
         r = session.get(url, timeout=timeout, stream=True)
         if r.status_code != 200:
             logger.warning(f"HTTP {r.status_code} ao baixar: {url}")
-            return (url, False, None, None, None)
+            return (url, False, None, None, None, None, None, f"HTTP {r.status_code}")
 
         raw_bytes = r.content
         if len(raw_bytes) > 20 * 1024 * 1024:  # >20MB
             logger.warning(f"Arquivo muito grande (>20MB): {url}")
-            return (url, False, None, None, None)
+            return (url, False, None, None, None, None, None, "Arquivo muito grande (>20MB)")
 
         img = Image.open(BytesIO(raw_bytes))
 
@@ -464,40 +509,39 @@ def baixar_processar(session, url: str, max_w: int, max_h: int, limite_kb: int, 
             if buf.tell() / 1024 <= limite_kb:
                 path = _save_bytes_to_tmp("png", buf.getvalue())
                 w, h = img_rgba.size
-                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex, None)
 
             pal = img_rgba.convert("P", palette=Image.ADAPTIVE, colors=256)
             buf = BytesIO(); pal.save(buf, format="PNG", optimize=True)
             if buf.tell() / 1024 <= limite_kb:
                 path = _save_bytes_to_tmp("png", buf.getvalue())
                 w, h = img_rgba.size
-                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+                return (url, True, path, (w, h), quality, sha1_hex, dhash_hex, None)
 
             bg = Image.new("RGB", img_rgba.size, (255, 255, 255))
             bg.paste(img_rgba, mask=img_rgba.split()[-1])
             buf = comprimir_jpeg_binsearch(bg, limite_kb)
             path = _save_bytes_to_tmp("jpg", buf.getvalue())
             w, h = bg.size
-            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex, None)
         else:
             buf = comprimir_jpeg_binsearch(img.convert("RGB"), limite_kb)
             path = _save_bytes_to_tmp("jpg", buf.getvalue())
             w, h = img.size
-            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex)
+            return (url, True, path, (w, h), quality, sha1_hex, dhash_hex, None)
 
     except requests.exceptions.Timeout:
         logger.warning(f"Timeout ao baixar: {url}")
-        return (url, False, None, None, None)
+        return (url, False, None, None, None, None, None, "Timeout")
     except Exception as e:
         logger.warning(f"Falha ao processar {url}: {e}")
-        return (url, False, None, None, None)
+        return (url, False, None, None, None, None, None, str(e))
     finally:
         try:
             del img
         except Exception:
             pass
         gc.collect()
-
 
 # === PARTE 7/10 =====================================================
 # ZIP de imagens + PPT com modelo (capa/final)
@@ -564,7 +608,8 @@ def gerar_ppt_modelo_capa_final(
     signature_bottom_margin_in=0.2, signature_right_margin_in=0.2,
     title_font_name="Radikal", title_font_size_pt=18, title_font_bold=True,
     title_font_color_rgb=(0,0,0),
-    excluded_urls=None
+    excluded_urls=None,
+    ignore_failed=True
 ):
     excluded_urls = excluded_urls or set()
     prs = Presentation(BytesIO(template_bytes))
@@ -758,18 +803,35 @@ def render_steps(current: int):
     html.append("</div>")
     st.markdown("".join(html), unsafe_allow_html=True)
 
-def render_summary(items, resultados, excluded):
+def render_summary(items, resultados, excluded, failed_details=None):
     total_urls = len(items)
     baixadas = sum(1 for _, _, url in items if url in resultados)
     lojas = len({loja for loja, _, _ in items})
-    st.markdown(
-        f"**Resumo:** "
-        f"<span class='badge'>Lojas: {lojas}</span> "
-        f"<span class='badge'>Links: {total_urls}</span> "
-        f"<span class='badge'>Baixadas: {baixadas}</span> "
-        f"<span class='badge'>Excluídas: {len(excluded)}</span>",
-        unsafe_allow_html=True
-    )
+    falhas = len(failed_details) if failed_details else 0
+    
+    stats_html = f"""
+    <div class="stats-container">
+        <div class="stats-title">📊 Estatísticas</div>
+        <div class="stats-grid">
+            <span class="stats-badge stats-info">Lojas: {lojas}</span>
+            <span class="stats-badge stats-info">Total de links: {total_urls}</span>
+            <span class="stats-badge stats-success">✅ Baixadas: {baixadas}</span>
+            <span class="stats-badge stats-error">❌ Falhas: {falhas}</span>
+            <span class="stats-badge stats-warning">🚫 Excluídas: {len(excluded)}</span>
+        </div>
+    </div>
+    """
+    
+    st.markdown(stats_html, unsafe_allow_html=True)
+    
+    # Retornar as estatísticas para uso posterior
+    return {
+        "total_urls": total_urls,
+        "baixadas": baixadas,
+        "lojas": lojas,
+        "falhas": falhas,
+        "excluidas": len(excluded)
+    }
 
 def _cb_select_all(loja, imgs):
     excluded = st.session_state.excluded_urls
@@ -972,7 +1034,7 @@ def reset_app(preserve_login: bool = True):
     st.rerun()
 
 # === PARTE 10/10 ====================================================
-# APP (main_app) + Roteamento final - MODIFICADO
+# APP (main_app) + Roteamento final - MODIFICADO E CORRIGIDO
 
 def main_app():
     # Inicializações seguras
@@ -996,8 +1058,10 @@ def main_app():
     if "images_zip_bytes" not in st.session_state: st.session_state.images_zip_bytes = None
     if "preview_bump" not in st.session_state: st.session_state.preview_bump = 0
     if "failed_urls" not in st.session_state: st.session_state.failed_urls = []
+    if "failed_details" not in st.session_state: st.session_state.failed_details = []
     if "url_line_map" not in st.session_state: st.session_state.url_line_map = {}
     if "quick_generate" not in st.session_state: st.session_state.quick_generate = False
+    if "ignore_failed" not in st.session_state: st.session_state.ignore_failed = True
 
     with st.sidebar:
         st.header("⚙️ Preferências")
@@ -1068,6 +1132,14 @@ def main_app():
             border_width = st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
 
         with st.expander("⚡ Performance & Qualidade", expanded=st.session_state.exp_perf):
+            # NOVO CAMPO: Comportamento em caso de falha
+            ignore_failed = st.checkbox(
+                "⚠️ Ignorar falhas e continuar gerando", 
+                value=True, 
+                key="ignore_failed",
+                help="Quando ativado, as fotos que falharam no download serão puladas e o book será gerado apenas com as que funcionaram."
+            )
+            
             thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
             thumbs_per_row = st.slider("Miniaturas por linha", 2, 8, 4, 1, key="thumbs_per_row")
             st.caption("Redimensionamento / compressão")
@@ -1109,8 +1181,12 @@ def main_app():
             reset_app(preserve_login=False)
         st.markdown('</div>', unsafe_allow_html=True)
 
-    # 1) Upload - MODIFICADO: Botões separados
-    with st.expander("1. Upload", expanded=not st.session_state.preview_mode):
+    # APENAS UM EXPANDER PRINCIPAL
+    main_expander = st.expander("📋 Gerador de Book - Painel Principal", expanded=True)
+    
+    with main_expander:
+        # 1) Upload
+        st.subheader("1. Upload da Planilha")
         up = st.file_uploader("Selecione a planilha (.xlsx)", type=["xlsx"], key=f"xlsx_upload_{st.session_state.xlsx_key}")
         
         if up:
@@ -1184,6 +1260,12 @@ def main_app():
                         st.warning("Nenhuma URL de imagem encontrada.")
                         st.stop()
 
+                    # Aviso sobre o modo de falha
+                    if st.session_state.get("ignore_failed", True):
+                        st.info("ℹ️ **Modo: Ignorar falhas ativado** - O sistema continuará mesmo se algumas imagens falharem.")
+                    else:
+                        st.warning("⚠️ **Modo: Parar em caso de falha** - O sistema parará se alguma imagem falhar.")
+
                     st.info(f"Baixando e processando **{total}** imagem(ns)...")
                     session = requests.Session()
                     adapter = requests.adapters.HTTPAdapter(
@@ -1211,6 +1293,7 @@ def main_app():
                     status = st.empty()
                     resultados, falhas, done = {}, 0, 0
                     failed_urls = []
+                    failed_details = []
 
                     with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
                         futures = {
@@ -1219,49 +1302,119 @@ def main_app():
                                 st.session_state["target_w"], st.session_state["target_h"],
                                 st.session_state["limite_kb"], st.session_state["req_timeout"],
                                 fx_cfg
-                            ): (loja, endereco, url)
+                            ): (loja, endereco, url, url_line_map.get(url, "?"))
                             for loja, endereco, url in items
                         }
                         for fut in as_completed(futures):
-                            loja, endereco, url = futures[fut]
+                            loja, endereco, url, line_no = futures[fut]
                             try:
                                 res = fut.result()
                             except Exception as e:
                                 logger.error(f"Erro em download {url}: {e}")
-                                res = (url, False, None, None, None)
+                                res = (url, False, None, None, None, None, None, f"Exception: {e}")
 
                             if res and isinstance(res, (list, tuple)) and len(res) >= 2 and res[1] is True:
+                                # Sucesso
                                 url_key = res[0]
                                 file_path = res[2] if len(res) > 2 else None
-                                wh      = res[3] if len(res) > 3 else (0, 0)
+                                wh = res[3] if len(res) > 3 else (0, 0)
                                 quality = res[4] if len(res) > 4 else {}
-                                sha1_hex  = res[5] if len(res) > 5 else ""
+                                sha1_hex = res[5] if len(res) > 5 else ""
                                 dhash_hex = res[6] if len(res) > 6 else ""
 
                                 if (not file_path) or (not wh) or (not isinstance(wh, (list, tuple))):
                                     falhas += 1
                                     failed_urls.append(url)
+                                    error_msg = res[7] if len(res) > 7 else "Erro desconhecido"
+                                    failed_details.append({
+                                        "url": url,
+                                        "loja": loja,
+                                        "linha": line_no,
+                                        "erro": error_msg
+                                    })
                                 else:
                                     resultados[url_key] = (loja, endereco, file_path, wh, quality, sha1_hex, dhash_hex)
                             else:
+                                # Falha
                                 falhas += 1
                                 failed_urls.append(url)
+                                error_msg = res[7] if len(res) > 7 else "Erro desconhecido" if len(res) > 7 else "Erro desconhecido"
+                                failed_details.append({
+                                    "url": url,
+                                    "loja": loja,
+                                    "linha": line_no,
+                                    "erro": error_msg
+                                })
 
                             done += 1
                             prog.progress(int(done * 100 / total))
-                            status.write(f"Processadas {done}/{total} imagens...")
+                            status.write(f"Processadas {done}/{total} imagens... (Falhas: {falhas})")
 
                     status.write(f"Concluído. Falhas: {falhas}")
 
+                    # Salvar informações de falha
                     st.session_state.failed_urls = failed_urls
+                    st.session_state.failed_details = failed_details
                     st.session_state.url_line_map = url_line_map
 
-                    if failed_urls:
-                        with st.expander("⚠️ Imagens puladas por erro (clique para ver)", expanded=False):
-                            for u in failed_urls[:200]:
-                                st.write(f"- Linha {url_line_map.get(u, '?')}: {u}")
-                            if len(failed_urls) > 200:
-                                st.caption(f"... e mais {len(failed_urls) - 200} itens.")
+                    # Verificar se há falhas e se devemos continuar
+                    if falhas > 0:
+                        if not st.session_state.get("ignore_failed", True):
+                            st.error(f"{falhas} imagem(ns) falharam. Desative 'Ignorar falhas' na sidebar se quiser parar.")
+                            st.stop()
+                        else:
+                            st.warning(f"{falhas} imagem(ns) foram puladas por erro, mas continuando com as {len(resultados)} restantes.")
+                            
+                            # Exibir detalhes das falhas de forma simples (sem expander aninhado)
+                            if failed_details:
+                                st.markdown(f"**📋 {len(failed_details)} Imagem(ns) com erro:**")
+                                
+                                # Criar DataFrame para melhor visualização
+                                df_failed = pd.DataFrame(failed_details)
+                                
+                                # Ordenar por linha
+                                if 'linha' in df_failed.columns:
+                                    try:
+                                        df_failed['linha_num'] = pd.to_numeric(df_failed['linha'], errors='coerce')
+                                        df_failed = df_failed.sort_values('linha_num')
+                                        df_failed = df_failed.drop(columns=['linha_num'])
+                                    except:
+                                        df_failed = df_failed.sort_values('linha')
+                                
+                                # Exibir tabela com scroll
+                                container = st.container()
+                                with container:
+                                    st.dataframe(
+                                        df_failed,
+                                        column_config={
+                                            "linha": "Linha",
+                                            "loja": "Loja",
+                                            "url": st.column_config.LinkColumn("URL"),
+                                            "erro": "Erro"
+                                        },
+                                        hide_index=True,
+                                        use_container_width=True,
+                                        height=min(300, 35 * min(10, len(failed_details)))
+                                    )
+                                    
+                                    # Botão para copiar lista
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        if st.button("📋 Copiar lista de falhas", key="copy_failed_list"):
+                                            text_to_copy = "\n".join([f"Linha {d['linha']}: {d['url']} - {d['erro']}" 
+                                                                     for d in failed_details])
+                                            st.code(text_to_copy, language="text")
+                                            st.success("Lista copiada para a área de transferência!")
+                                    with col2:
+                                        if st.button("📁 Exportar falhas (CSV)", key="export_failed_csv"):
+                                            csv = df_failed.to_csv(index=False).encode('utf-8')
+                                            st.download_button(
+                                                label="Baixar CSV",
+                                                data=csv,
+                                                file_name="falhas_download.csv",
+                                                mime="text/csv",
+                                                key="download_failed_csv"
+                                            )
 
                     low_q, dups = detectar_problemas(
                         resultados,
@@ -1297,6 +1450,7 @@ def main_app():
                                 if (st.session_state.get("use_template") and template_file) else None,
                             "low_quality_urls": list(low_q),
                             "duplicate_urls": list(dups),
+                            "ignore_failed": st.session_state.get("ignore_failed", True),
                         }
                     }
 
@@ -1319,23 +1473,71 @@ def main_app():
                     st.session_state.exp_perf = False
                     st.session_state.exp_model = False
                     st.rerun()
-
-    # 2) Pré-visualização - MODIFICADO: Condicional mais inteligente
-    if st.session_state.preview_mode and st.session_state.pipeline and not st.session_state.quick_generate:
-        with st.expander("2. Pré-visualização", expanded=True):
+        
+        # 2) Pré-visualização
+        if st.session_state.preview_mode and st.session_state.pipeline and not st.session_state.quick_generate:
+            st.markdown("---")
+            st.subheader("2. Pré-visualização")
             p = st.session_state.pipeline
 
-            if st.session_state.get("failed_urls"):
-                failed_urls = st.session_state.failed_urls
-                url_line_map = st.session_state.url_line_map
-                st.warning(f"{len(failed_urls)} imagem(ns) foram puladas por erro de download/processamento.")
-                with st.expander("Ver URLs com a linha da planilha", expanded=False):
-                    for u in failed_urls[:200]:
-                        st.write(f"- Linha {url_line_map.get(u, '?')}: {u}")
-                    if len(failed_urls) > 200:
-                        st.caption(f"... e mais {len(failed_urls) - 200} itens.")
+            # Mostrar estatísticas
+            stats = render_summary(p["items"], p["resultados"], st.session_state.excluded_urls, st.session_state.get("failed_details", []))
+            
+            # Aviso se houver falhas
+            if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
+                st.info(f"""
+                ⚠️ **Atenção:** {len(st.session_state.failed_details)} imagem(ns) falharam no download.
+                O book será gerado apenas com as {stats['baixadas']} imagens que foram baixadas com sucesso.
+                """)
+                
+                # Opção para ver detalhes das falhas - usando checkbox para controlar visibilidade
+                show_failed_details = st.checkbox("Mostrar detalhes das falhas", key="show_failed_details")
+                
+                if show_failed_details and st.session_state.failed_details:
+                    st.markdown(f"**📋 Detalhes das {len(st.session_state.failed_details)} falhas:**")
+                    
+                    df_failed = pd.DataFrame(st.session_state.failed_details)
+                    if 'linha' in df_failed.columns:
+                        try:
+                            df_failed['linha_num'] = pd.to_numeric(df_failed['linha'], errors='coerce')
+                            df_failed = df_failed.sort_values('linha_num')
+                            df_failed = df_failed.drop(columns=['linha_num'])
+                        except:
+                            df_failed = df_failed.sort_values('linha')
+                    
+                    # Exibir tabela com altura limitada
+                    st.dataframe(
+                        df_failed,
+                        column_config={
+                            "linha": "Linha",
+                            "loja": "Loja",
+                            "url": st.column_config.LinkColumn("URL"),
+                            "erro": "Erro"
+                        },
+                        hide_index=True,
+                        use_container_width=True,
+                        height=min(400, 35 * min(15, len(st.session_state.failed_details)))
+                    )
+                    
+                    # Botões de ação
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("📋 Copiar lista", key="copy_failed_preview"):
+                            text_to_copy = "\n".join([f"Linha {d['linha']}: {d['url']} - {d['erro']}" 
+                                                     for d in st.session_state.failed_details])
+                            st.code(text_to_copy, language="text")
+                            st.success("Lista copiada para a área de transferência!")
+                    with col2:
+                        if st.button("📁 Exportar CSV", key="export_failed_preview"):
+                            csv = df_failed.to_csv(index=False).encode('utf-8')
+                            st.download_button(
+                                label="Baixar CSV",
+                                data=csv,
+                                file_name="falhas_detalhadas.csv",
+                                mime="text/csv",
+                                key="download_failed_preview"
+                            )
 
-            render_summary(p["items"], p["resultados"], st.session_state.excluded_urls)
             render_preview(
                 p["items"], p["resultados"],
                 p["settings"]["sort_mode"],
@@ -1343,20 +1545,27 @@ def main_app():
                 p["settings"]["thumbs_per_row"]
             )
             st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT/ZIP. Depois, avance para a etapa 3.")
-
-    # 3) Gerar / Exportar - MODIFICADO: Lógica otimizada
-    with st.expander("3. Gerar / Exportar", expanded=st.session_state.get("preview_mode", False) or st.session_state.get("quick_generate", False)):
-        if not st.session_state.pipeline:
-            st.info("Faça o upload da planilha e processe as imagens primeiro.")
-        else:
+        
+        # 3) Gerar / Exportar
+        if st.session_state.pipeline:
+            st.markdown("---")
+            st.subheader("3. Gerar / Exportar")
+            
             cfg = st.session_state.pipeline["settings"]
             items = st.session_state.pipeline["items"]
             resultados = st.session_state.pipeline["resultados"]
+            
+            # Mostrar estatísticas
+            stats = render_summary(items, resultados, st.session_state.excluded_urls, st.session_state.get("failed_details", []))
 
             # GERAÇÃO DIRETA SE SOLICITADA
             if st.session_state.quick_generate and not st.session_state.get("ppt_bytes"):
                 with st.spinner("🚀 Gerando PPT diretamente..."):
                     try:
+                        # Aviso se houver falhas
+                        if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
+                            st.info(f"ℹ️ Gerando com {stats['falhas']} falha(s) ignorada(s). Total de imagens no book: {stats['baixadas']}")
+                        
                         titulo = (st.session_state.output_filename or "Apresentacao").strip()
                         use_template = cfg.get("use_template", False)
                         template_bytes = cfg.get("template_bytes")
@@ -1377,7 +1586,8 @@ def main_app():
                                 title_font_size_pt=cfg["title_font_size_pt"],
                                 title_font_bold=cfg["title_font_bold"],
                                 title_font_color_rgb=cfg.get("title_font_color_rgb", (0,0,0)),
-                                excluded_urls=st.session_state.excluded_urls
+                                excluded_urls=st.session_state.excluded_urls,
+                                ignore_failed=cfg.get("ignore_failed", True)
                             )
                         else:
                             prs = Presentation()
@@ -1428,7 +1638,7 @@ def main_app():
                         st.session_state.ppt_bytes = ppt_bytes
                         st.session_state.generated = True
                         st.session_state.quick_generate = False
-                        st.success("✅ PPT gerado com sucesso!")
+                        st.success(f"✅ PPT gerado com sucesso! Total de slides gerados: {len(groups)} lojas processadas.")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao gerar PPT")
@@ -1519,6 +1729,8 @@ def main_app():
                                 st.image(canvas.convert("RGB"), caption=f"Slide {idx+1} — {loja}", use_column_width=True)
 
                 # CONTROLES DE DOWNLOAD
+                st.markdown("---")
+                st.subheader("📥 Download dos Arquivos")
                 col1, col2, col3 = st.columns([3, 1, 1])
                 with col1:
                     st.session_state.output_filename = st.text_input(
@@ -1556,6 +1768,10 @@ def main_app():
                 # Geração do PPT (apenas para fluxo de visualização)
                 if (not st.session_state.get("ppt_bytes")) and ('btn_generate' in locals()) and btn_generate and not st.session_state.quick_generate:
                     try:
+                        # Aviso se houver falhas
+                        if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
+                            st.info(f"ℹ️ Gerando com {stats['falhas']} falha(s) ignorada(s). Total de imagens no book: {stats['baixadas']}")
+                        
                         titulo = (st.session_state.output_filename or "Apresentacao").strip()
                         use_template = cfg.get("use_template", False)
                         template_bytes = cfg.get("template_bytes")
@@ -1576,7 +1792,8 @@ def main_app():
                                 title_font_size_pt=cfg["title_font_size_pt"],
                                 title_font_bold=cfg["title_font_bold"],
                                 title_font_color_rgb=cfg.get("title_font_color_rgb", (0,0,0)),
-                                excluded_urls=st.session_state.excluded_urls
+                                excluded_urls=st.session_state.excluded_urls,
+                                ignore_failed=cfg.get("ignore_failed", True)
                             )
                         else:
                             prs = Presentation()
@@ -1626,6 +1843,7 @@ def main_app():
 
                         st.session_state.ppt_bytes = ppt_bytes
                         st.session_state.generated = True
+                        st.success(f"✅ PPT gerado com sucesso! Total de slides gerados: {len(groups)} lojas processadas.")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao gerar PPT")
@@ -1640,10 +1858,20 @@ def main_app():
                             excluded_urls=st.session_state.excluded_urls
                         )
                         st.session_state.images_zip_bytes = zip_bytes
+                        st.success(f"✅ ZIP gerado com sucesso! Total de imagens incluídas: {sum(1 for url in resultados if url not in st.session_state.excluded_urls)}")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao montar ZIP")
                         st.error(f"Falha ao montar ZIP: {e}")
+        
+        # Mensagem inicial se não houver pipeline
+        if not st.session_state.pipeline:
+            st.info("📤 **Faça o upload da planilha para começar**")
+            st.markdown("""
+            1. Selecione sua planilha Excel com as colunas de loja e fotos
+            2. Configure as preferências na barra lateral
+            3. Clique em **Visualização Rápida** ou **Gerar PPT Direto**
+            """)
 
 # -------------------------------------------------------------------
 # ROTEAMENTO FINAL
@@ -1652,5 +1880,3 @@ if not st.session_state.auth:
     do_login()
 else:
     main_app()
-
-
