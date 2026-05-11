@@ -528,6 +528,93 @@ def baixar_processar_resiliente(session, url: str, max_w: int, max_h: int, limit
     return (url, False, None, None, None, None, None, "Todas as tentativas falharam")
 
 # === PARTE 7/10 =====================================================
+# PPT helpers + funções auxiliares
+
+def get_slots(n, prs):
+    IMG_TOP = Inches(1.2); CONTENT_W = Inches(11); CONTENT_H = Inches(6); GAP = Inches(0.2)
+    start_left = (prs.slide_width - CONTENT_W) / 2
+    if n == 1:
+        return [(start_left, IMG_TOP, CONTENT_W, CONTENT_H)]
+    cols = n
+    total_gap = GAP * (cols - 1)
+    cell_w = (CONTENT_W - total_gap) / cols
+    return [(start_left + c*(cell_w+GAP), IMG_TOP, cell_w, CONTENT_H) for c in range(cols)]
+
+def add_title_and_address(slide, title_text, address_text, title_rgb=(0,0,0),
+                          font_name="Radikal", title_font_size_pt=18, title_font_bold=True):
+    TITLE_LEFT, TITLE_TOP, TITLE_W = Inches(0.5), Inches(0.2), Inches(12)
+    tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, Inches(1))
+    tf = tx.text_frame
+    tf.clear()
+    p = tf.paragraphs[0]
+    run = p.add_run()
+    run.text = title_text
+    f = run.font
+    f.name = font_name or "Radikal"
+    f.size = Pt(title_font_size_pt or 18)
+    f.bold = bool(title_font_bold)
+    f.color.rgb = RGBColor(*title_rgb)
+    p.alignment = 1
+    if address_text:
+        p2 = tf.add_paragraph()
+        run2 = p2.add_run()
+        run2.text = address_text
+        f2 = run2.font
+        f2.name = font_name or "Radikal"
+        f2.size = Pt(max(8, (title_font_size_pt or 18) / 2))
+        f2.bold = False
+        f2.color.rgb = RGBColor(*title_rgb)
+        p2.alignment = 1
+
+def set_slide_bg(slide, rgb_tuple):
+    fill = slide.background.fill
+    fill.solid()
+    fill.fore_color.rgb = RGBColor(*rgb_tuple)
+
+def place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in):
+    img_w_in = px_to_inches(w_px)
+    img_h_in = px_to_inches(h_px)
+    ratio = min(float(max_w_in)/float(img_w_in), float(max_h_in)/float(img_h_in), 1.0)
+    final_w = img_w_in * ratio
+    final_h = img_h_in * ratio
+    x = left + (max_w_in - final_w)/2
+    y = top + (max_h_in - final_h)/2
+    slide.shapes.add_picture(file_path, x, y, width=final_w, height=final_h)
+
+def is_portrait(w_px: int, h_px: int, tol: float = 1.05) -> bool:
+    if w_px <= 0 or h_px <= 0:
+        return False
+    return (h_px / float(w_px)) >= tol
+
+def move_slide_to_index(prs, old_index, new_index):
+    sldIdLst = prs.slides._sldIdLst
+    sld = sldIdLst[old_index]
+    sldIdLst.remove(sld)
+    sldIdLst.insert(new_index, sld)
+
+def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
+    if not logo_bytes: 
+        return
+    left = prs.slide_width - Inches(0.5) - Inches(logo_width_in)
+    top = Inches(0.2)
+    slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
+
+def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_width_in: float,
+                               bottom_margin_in: float = 0.2, right_margin_in: float = 0.2):
+    if not signature_bytes: 
+        return
+    try:
+        im = Image.open(BytesIO(signature_bytes))
+        w_px, h_px = im.size
+        ratio = (h_px / float(w_px)) if w_px else 0.4
+    except Exception:
+        ratio = 0.4
+    sig_h_in = signature_width_in * ratio
+    left = prs.slide_width - Inches(right_margin_in) - Inches(signature_width_in)
+    top = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
+    slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
+
+# === PARTE 8/10 =====================================================
 # ZIP de imagens + PPT com modelo (capa/final)
 
 def _path_to_jpeg_bytes(file_path: str) -> bytes:
@@ -659,78 +746,8 @@ def gerar_ppt_modelo_capa_final(
     logger.info("PPT com modelo gerado com sucesso.")
     return out
 
-# === PARTE 8/10 =====================================================
-# PPT helpers + funções auxiliares
-
-def get_slots(n, prs):
-    IMG_TOP = Inches(1.2); CONTENT_W = Inches(11); CONTENT_H = Inches(6); GAP = Inches(0.2)
-    start_left = (prs.slide_width - CONTENT_W) / 2
-    if n == 1:
-        return [(start_left, IMG_TOP, CONTENT_W, CONTENT_H)]
-    cols = n
-    total_gap = GAP * (cols - 1)
-    cell_w = (CONTENT_W - total_gap) / cols
-    return [(start_left + c*(cell_w+GAP), IMG_TOP, cell_w, CONTENT_H) for c in range(cols)]
-
-def add_title_and_address(slide, title_text, address_text, title_rgb=(0,0,0),
-                          font_name="Radikal", title_font_size_pt=18, title_font_bold=True):
-    TITLE_LEFT, TITLE_TOP, TITLE_W = Inches(0.5), Inches(0.2), Inches(12)
-    tx = slide.shapes.add_textbox(TITLE_LEFT, TITLE_TOP, TITLE_W, Inches(1))
-    tf = tx.text_frame; tf.clear()
-    p = tf.paragraphs[0]; run = p.add_run(); run.text = title_text    f = run.font; f.name = font_name or "Radikal"; f.size = Pt(title_font_size_pt or 18)
-    f.bold = bool(title_font_bold); f.color.rgb = RGBColor(*title_rgb)
-    p.alignment = 1
-    if address_text:
-        p2 = tf.add_paragraph()
-        run2 = p2.add_run(); run2.text = address_text
-        f2 = run2.font; f2.name = font_name or "Radikal"; f2.size = Pt(max(8, (title_font_size_pt or 18) / 2))
-        f2.bold = False; f2.color.rgb = RGBColor(*title_rgb)
-        p2.alignment = 1
-
-def set_slide_bg(slide, rgb_tuple):
-    fill = slide.background.fill
-    fill.solid(); fill.fore_color.rgb = RGBColor(*rgb_tuple)
-
-def place_picture(slide, file_path, w_px, h_px, left, top, max_w_in, max_h_in):
-    img_w_in = px_to_inches(w_px); img_h_in = px_to_inches(h_px)
-    ratio = min(float(max_w_in)/float(img_w_in), float(max_h_in)/float(img_h_in), 1.0)
-    final_w = img_w_in * ratio; final_h = img_h_in * ratio
-    x = left + (max_w_in - final_w)/2; y = top + (max_h_in - final_h)/2
-    slide.shapes.add_picture(file_path, x, y, width=final_w, height=final_h)
-
-def is_portrait(w_px: int, h_px: int, tol: float = 1.05) -> bool:
-    if w_px <= 0 or h_px <= 0:
-        return False
-    return (h_px / float(w_px)) >= tol
-
-def move_slide_to_index(prs, old_index, new_index):
-    sldIdLst = prs.slides._sldIdLst
-    sld = sldIdLst[old_index]
-    sldIdLst.remove(sld)
-    sldIdLst.insert(new_index, sld)
-
-def add_logo_top_right(slide, prs, logo_bytes: bytes, logo_width_in: float):
-    if not logo_bytes: 
-        return
-    left = prs.slide_width - Inches(0.5) - Inches(logo_width_in); top = Inches(0.2)
-    slide.shapes.add_picture(BytesIO(logo_bytes), left, top, width=Inches(logo_width_in))
-
-def add_signature_bottom_right(slide, prs, signature_bytes: bytes, signature_width_in: float,
-                               bottom_margin_in: float = 0.2, right_margin_in: float = 0.2):
-    if not signature_bytes: 
-        return
-    try:
-        im = Image.open(BytesIO(signature_bytes)); w_px, h_px = im.size
-        ratio = (h_px / float(w_px)) if w_px else 0.4
-    except Exception:
-        ratio = 0.4
-    sig_h_in = signature_width_in * ratio
-    left = prs.slide_width - Inches(right_margin_in) - Inches(signature_width_in)
-    top  = prs.slide_height - Inches(bottom_margin_in) - Inches(sig_h_in)
-    slide.shapes.add_picture(BytesIO(signature_bytes), left, top, width=Inches(signature_width_in))
-
 # === PARTE 9/10 =====================================================
-# UI de miniaturas + detecção + reset (simplificado)
+# UI de miniaturas + detecção + reset
 
 def img_to_html_with_border(image: Image.Image, width_px: int, border_px: int, border_color: str):
     im = image.copy()
@@ -955,7 +972,6 @@ def main_app():
             border_width = st.slider("Espessura da borda (px)", 1, 30, 6, 1, key="fx_border_width", disabled=not fx_border)
 
         with st.expander("⚡ Performance & Qualidade", expanded=st.session_state.exp_perf):
-            # Configurações ULTRA-RESILIENTES (valores otimizados)
             st.info("⚡ Configurações otimizadas para máximo de sucesso no download")
             
             max_retries = st.slider("🔄 Tentativas por imagem", 3, 10, 5, 1, key="max_retries",
@@ -986,7 +1002,6 @@ def main_app():
             thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
             thumbs_per_row = st.slider("Miniaturas por linha", 2, 8, 4, 1, key="thumbs_per_row")
 
-            # Comportamento em caso de falha
             ignore_failed = st.checkbox(
                 "⚠️ Ignorar falhas e continuar gerando", 
                 value=True, 
@@ -1235,7 +1250,7 @@ def main_app():
                     
                     st.rerun()
         
-        # Resto da UI (pré-visualização e geração) - similar à versão original mas simplificada
+        # Resto da UI (pré-visualização e geração)
         if st.session_state.pipeline:
             if st.session_state.preview_mode and not st.session_state.quick_generate:
                 st.markdown("---")
@@ -1247,7 +1262,6 @@ def main_app():
                 if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
                     st.info(f"⚠️ {len(st.session_state.failed_details)} imagem(ns) falharam. O book será gerado com {stats['baixadas']} imagens.")
                 
-                # Preview simplificado
                 st.info("👆 Selecione as imagens que deseja excluir e depois clique em 'Gerar PPT'")
                 
                 if st.button("🔄 Gerar PPT Agora", use_container_width=True, type="primary"):
@@ -1378,7 +1392,7 @@ def main_app():
             st.info("📤 **Faça o upload da planilha para começar**")
             st.markdown("""
             ### 🚀 Modo Ultra-Resiliente - Características:
-            - ✅ **5 tentativas** automáticas por imagem
+            - ✅ **5 tentativas** automáticas por imagem (configurável até 10)
             - ✅ **Backoff exponencial** (espera progressiva entre tentativas)
             - ✅ **Headers realistas** (simula navegador)
             - ✅ **Timeout adaptativo** (aumenta a cada tentativa)
