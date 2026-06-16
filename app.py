@@ -263,7 +263,7 @@ def hex_to_rgb(hex_str: str):
     return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
 
 def pick_contrast_color(r, g, b):
-    brightness = (r*299 + g*587 + b*114) / 1000
+    brightness = (r*299 + g*587 + b*114) / 2000
     return (0,0,0) if brightness > 128 else (255,255,255)
 
 # --- HASHES p/ duplicatas ---
