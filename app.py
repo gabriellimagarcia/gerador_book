@@ -285,6 +285,47 @@ TMP_ROOT = tempfile.gettempdir()
 APP_TMP_DIR = os.path.join(TMP_ROOT, "gerador_book_cache")
 os.makedirs(APP_TMP_DIR, exist_ok=True)
 
+# -------------------------------------------------------------------
+# LIMITES DE MEMÓRIA / PERFORMANCE
+# -------------------------------------------------------------------
+# Para evitar queda do Streamlit em lotes grandes, a prévia completa
+# fica limitada. O PPT/ZIP continuam podendo usar todas as imagens.
+MAX_PREVIEW_IMAGES = 70
+DOWNLOAD_BATCH_SIZE = 100
+
+def chunks(lista, tamanho: int):
+    for i in range(0, len(lista), tamanho):
+        yield lista[i:i + tamanho]
+
+def _new_artifact_path(ext: str, prefix: str = "gb_artifact") -> str:
+    fd, path = tempfile.mkstemp(prefix=f"{prefix}_", suffix=f".{ext}", dir=APP_TMP_DIR)
+    os.close(fd)
+    return path
+
+def _save_bytesio_to_tmp(ext: str, bio: BytesIO, prefix: str = "gb_artifact") -> str:
+    path = _new_artifact_path(ext, prefix)
+    bio.seek(0)
+    with open(path, "wb") as f:
+        while True:
+            chunk = bio.read(1024 * 1024)
+            if not chunk:
+                break
+            f.write(chunk)
+    return path
+
+def _safe_remove(path: str):
+    if path and os.path.exists(path):
+        try:
+            os.remove(path)
+        except Exception:
+            pass
+
+def _file_size_mb(path: str) -> float:
+    try:
+        return os.path.getsize(path) / (1024 * 1024)
+    except Exception:
+        return 0.0
+
 def _save_bytes_to_tmp(ext: str, data: bytes) -> str:
     fd, path = tempfile.mkstemp(prefix="gb_", suffix=f".{ext}", dir=APP_TMP_DIR)
     with os.fdopen(fd, "wb") as f:
@@ -576,14 +617,17 @@ def _sanitize_folder_name(name: str) -> str:
     safe = re.sub(r'\s+', ' ', safe)
     return safe[:80] if len(safe) > 80 else safe
 
-def montar_zip_imagens(items, resultados, excluded_urls: set) -> BytesIO:
+def montar_zip_imagens(items, resultados, excluded_urls: set) -> str:
+    """Monta o ZIP em disco e retorna o caminho do arquivo.
+    Isso evita manter um ZIP grande inteiro no st.session_state.
+    """
     grupos = OrderedDict()
     for loja, endereco, url in items:
         if (url in resultados) and (url not in excluded_urls):
             grupos.setdefault(str(loja), []).append((url, resultados[url]))
 
-    mem_zip = BytesIO()
-    with zipfile.ZipFile(mem_zip, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+    zip_path = _new_artifact_path("zip", "imagens")
+    with zipfile.ZipFile(zip_path, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
         for loja, lista in grupos.items():
             pasta = _sanitize_folder_name(loja) or "Sem Nome"
             contador = 1
@@ -596,8 +640,7 @@ def montar_zip_imagens(items, resultados, excluded_urls: set) -> BytesIO:
                 except Exception as e:
                     logger.warning(f"Falha ao escrever {caminho} no ZIP: {e}")
                 contador += 1
-    mem_zip.seek(0)
-    return mem_zip
+    return zip_path
 
 def gerar_ppt_modelo_capa_final(
     template_bytes: bytes,
@@ -1024,6 +1067,8 @@ def reset_app(preserve_login: bool = True):
 
     st.session_state.ppt_bytes = None
     st.session_state.images_zip_bytes = None
+    st.session_state.ppt_path = None
+    st.session_state.images_zip_path = None
     st.session_state.generated = False
     st.session_state.output_filename = "Modelo_01"
 
@@ -1056,6 +1101,8 @@ def main_app():
     if "generated" not in st.session_state: st.session_state.generated = False
     if "ppt_bytes" not in st.session_state: st.session_state.ppt_bytes = None
     if "images_zip_bytes" not in st.session_state: st.session_state.images_zip_bytes = None
+    if "ppt_path" not in st.session_state: st.session_state.ppt_path = None
+    if "images_zip_path" not in st.session_state: st.session_state.images_zip_path = None
     if "preview_bump" not in st.session_state: st.session_state.preview_bump = 0
     if "failed_urls" not in st.session_state: st.session_state.failed_urls = []
     if "failed_details" not in st.session_state: st.session_state.failed_details = []
@@ -1142,12 +1189,13 @@ def main_app():
             
             thumb_px = st.slider("Tamanho das miniaturas (px)", 120, 400, 220, 10, key="thumb_px")
             thumbs_per_row = st.slider("Miniaturas por linha", 2, 8, 4, 1, key="thumbs_per_row")
+            st.caption(f"Pré-visualização rápida limitada a {MAX_PREVIEW_IMAGES} imagens para proteger a memória.")
             st.caption("Redimensionamento / compressão")
-            target_w = st.number_input("Largura máx (px)", 480, 4096, 1280, 10, key="target_w")
-            target_h = st.number_input("Altura máx (px)",  360, 4096, 720, 10, key="target_h")
-            limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 450, 10, key="limite_kb")
+            target_w = st.number_input("Largura máx (px)", 480, 4096, 960, 10, key="target_w")
+            target_h = st.number_input("Altura máx (px)",  360, 4096, 540, 10, key="target_h")
+            limite_kb = st.number_input("Tamanho máx por foto (KB)", 50, 2000, 200, 10, key="limite_kb")
             st.caption("Rede e paralelismo")
-            max_workers = st.slider("Trabalhos em paralelo", 2, 32, 6, key="max_workers")
+            max_workers = st.slider("Trabalhos em paralelo", 1, 12, 3, key="max_workers")
             req_timeout = st.slider("Timeout por download (s)", 5, 60, 15, key="req_timeout")
             st.caption("Critérios de qualidade (após o download)")
             min_mp = st.slider("Megapixels mínimos", 0.1, 5.0, 0.8, 0.1, key="min_megapixels")
@@ -1159,7 +1207,7 @@ def main_app():
         current_step = 1
         if st.session_state.get("preview_mode") and not st.session_state.get("generated"):
             current_step = 2
-        if st.session_state.get("generated") or st.session_state.get("images_zip_bytes"):
+        if st.session_state.get("generated") or st.session_state.get("images_zip_bytes") or st.session_state.get("images_zip_path"):
             current_step = 3
         st.title("📸 Gerador de Book")
         render_steps(current_step)
@@ -1295,34 +1343,48 @@ def main_app():
                     failed_urls = []
                     failed_details = []
 
-                    with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
-                        futures = {
-                            ex.submit(
-                                baixar_processar, session, url,
-                                st.session_state["target_w"], st.session_state["target_h"],
-                                st.session_state["limite_kb"], st.session_state["req_timeout"],
-                                fx_cfg
-                            ): (loja, endereco, url, url_line_map.get(url, "?"))
-                            for loja, endereco, url in items
-                        }
-                        for fut in as_completed(futures):
-                            loja, endereco, url, line_no = futures[fut]
-                            try:
-                                res = fut.result()
-                            except Exception as e:
-                                logger.error(f"Erro em download {url}: {e}")
-                                res = (url, False, None, None, None, None, None, f"Exception: {e}")
+                    for bloco in chunks(items, DOWNLOAD_BATCH_SIZE):
+                        with ThreadPoolExecutor(max_workers=st.session_state["max_workers"]) as ex:
+                            futures = {
+                                ex.submit(
+                                    baixar_processar, session, url,
+                                    st.session_state["target_w"], st.session_state["target_h"],
+                                    st.session_state["limite_kb"], st.session_state["req_timeout"],
+                                    fx_cfg
+                                ): (loja, endereco, url, url_line_map.get(url, "?"))
+                                for loja, endereco, url in bloco
+                            }
+                            for fut in as_completed(futures):
+                                loja, endereco, url, line_no = futures[fut]
+                                try:
+                                    res = fut.result()
+                                except Exception as e:
+                                    logger.error(f"Erro em download {url}: {e}")
+                                    res = (url, False, None, None, None, None, None, f"Exception: {e}")
 
-                            if res and isinstance(res, (list, tuple)) and len(res) >= 2 and res[1] is True:
-                                # Sucesso
-                                url_key = res[0]
-                                file_path = res[2] if len(res) > 2 else None
-                                wh = res[3] if len(res) > 3 else (0, 0)
-                                quality = res[4] if len(res) > 4 else {}
-                                sha1_hex = res[5] if len(res) > 5 else ""
-                                dhash_hex = res[6] if len(res) > 6 else ""
+                                if res and isinstance(res, (list, tuple)) and len(res) >= 2 and res[1] is True:
+                                    # Sucesso
+                                    url_key = res[0]
+                                    file_path = res[2] if len(res) > 2 else None
+                                    wh = res[3] if len(res) > 3 else (0, 0)
+                                    quality = res[4] if len(res) > 4 else {}
+                                    sha1_hex = res[5] if len(res) > 5 else ""
+                                    dhash_hex = res[6] if len(res) > 6 else ""
 
-                                if (not file_path) or (not wh) or (not isinstance(wh, (list, tuple))):
+                                    if (not file_path) or (not wh) or (not isinstance(wh, (list, tuple))):
+                                        falhas += 1
+                                        failed_urls.append(url)
+                                        error_msg = res[7] if len(res) > 7 else "Erro desconhecido"
+                                        failed_details.append({
+                                            "url": url,
+                                            "loja": loja,
+                                            "linha": line_no,
+                                            "erro": error_msg
+                                        })
+                                    else:
+                                        resultados[url_key] = (loja, endereco, file_path, wh, quality, sha1_hex, dhash_hex)
+                                else:
+                                    # Falha
                                     falhas += 1
                                     failed_urls.append(url)
                                     error_msg = res[7] if len(res) > 7 else "Erro desconhecido"
@@ -1332,23 +1394,13 @@ def main_app():
                                         "linha": line_no,
                                         "erro": error_msg
                                     })
-                                else:
-                                    resultados[url_key] = (loja, endereco, file_path, wh, quality, sha1_hex, dhash_hex)
-                            else:
-                                # Falha
-                                falhas += 1
-                                failed_urls.append(url)
-                                error_msg = res[7] if len(res) > 7 else "Erro desconhecido" if len(res) > 7 else "Erro desconhecido"
-                                failed_details.append({
-                                    "url": url,
-                                    "loja": loja,
-                                    "linha": line_no,
-                                    "erro": error_msg
-                                })
 
-                            done += 1
-                            prog.progress(int(done * 100 / total))
-                            status.write(f"Processadas {done}/{total} imagens... (Falhas: {falhas})")
+                                done += 1
+                                prog.progress(int(done * 100 / total))
+                                status.write(f"Processadas {done}/{total} imagens... (Falhas: {falhas})")
+
+                        # Libera objetos do lote finalizado antes de começar o próximo.
+                        gc.collect()
 
                     status.write(f"Concluído. Falhas: {falhas}")
 
@@ -1465,6 +1517,10 @@ def main_app():
 
                     st.session_state.ppt_bytes = None
                     st.session_state.images_zip_bytes = None
+                    _safe_remove(st.session_state.get("ppt_path"))
+                    _safe_remove(st.session_state.get("images_zip_path"))
+                    st.session_state.ppt_path = None
+                    st.session_state.images_zip_path = None
 
                     st.session_state.exp_plan = False
                     st.session_state.exp_style = False
@@ -1538,13 +1594,27 @@ def main_app():
                                 key="download_failed_preview"
                             )
 
+            total_baixadas_preview = len(p["resultados"])
+            if total_baixadas_preview > MAX_PREVIEW_IMAGES:
+                st.warning(
+                    f"Foram baixadas {total_baixadas_preview} imagens. "
+                    f"Para evitar erro de memória, a visualização rápida mostra somente as primeiras {MAX_PREVIEW_IMAGES} imagens. "
+                    "O PPT e o ZIP continuam usando todas as imagens não excluídas."
+                )
+                preview_urls = set(list(p["resultados"].keys())[:MAX_PREVIEW_IMAGES])
+                preview_items = [(loja, end, url) for loja, end, url in p["items"] if url in preview_urls]
+                preview_resultados = {url: p["resultados"][url] for url in preview_urls if url in p["resultados"]}
+            else:
+                preview_items = p["items"]
+                preview_resultados = p["resultados"]
+
             render_preview(
-                p["items"], p["resultados"],
+                preview_items, preview_resultados,
                 p["settings"]["sort_mode"],
                 p["settings"]["thumb_px"],
                 p["settings"]["thumbs_per_row"]
             )
-            st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT/ZIP. Depois, avance para a etapa 3.")
+            st.info("Marque **Excluir esta foto** nas imagens que não devem ir para o PPT/ZIP. Depois, avance para a etapa 3. Para lotes acima de 70 imagens, a exclusão visual fica limitada à amostra exibida.")
         
         # 3) Gerar / Exportar
         if st.session_state.pipeline:
@@ -1559,7 +1629,7 @@ def main_app():
             stats = render_summary(items, resultados, st.session_state.excluded_urls, st.session_state.get("failed_details", []))
 
             # GERAÇÃO DIRETA SE SOLICITADA
-            if st.session_state.quick_generate and not st.session_state.get("ppt_bytes"):
+            if st.session_state.quick_generate and not st.session_state.get("ppt_bytes") and not st.session_state.get("ppt_path"):
                 with st.spinner("🚀 Gerando PPT diretamente..."):
                     try:
                         # Aviso se houver falhas
@@ -1635,10 +1705,13 @@ def main_app():
 
                             out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
 
-                        st.session_state.ppt_bytes = ppt_bytes
+                        _safe_remove(st.session_state.get("ppt_path"))
+                        st.session_state.ppt_path = _save_bytesio_to_tmp("pptx", ppt_bytes, "ppt")
+                        st.session_state.ppt_bytes = None
                         st.session_state.generated = True
                         st.session_state.quick_generate = False
-                        st.success(f"✅ PPT gerado com sucesso! Total de slides gerados: {len(groups)} lojas processadas.")
+                        lojas_processadas = len({loja for loja, _, url in items if url in resultados and url not in st.session_state.excluded_urls})
+                        st.success(f"✅ PPT gerado com sucesso! Lojas processadas: {lojas_processadas}. Arquivo: {_file_size_mb(st.session_state.ppt_path):.1f} MB")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao gerar PPT")
@@ -1740,7 +1813,17 @@ def main_app():
                     )
 
                 with col2:
-                    if st.session_state.get("ppt_bytes"):
+                    if st.session_state.get("ppt_path") and os.path.exists(st.session_state.ppt_path):
+                        with open(st.session_state.ppt_path, "rb") as f:
+                            st.download_button(
+                                f"⬇️ Baixar PPT ({_file_size_mb(st.session_state.ppt_path):.1f} MB)",
+                                data=f,
+                                file_name=f"{(st.session_state.output_filename or 'Apresentacao')}.pptx",
+                                mime="application/vnd.openxmlformats-officedocument.presentation.presentation",
+                                use_container_width=True,
+                                key=f"download_{st.session_state.get('download_key', 0)}"
+                            )
+                    elif st.session_state.get("ppt_bytes"):
                         st.download_button(
                             "⬇️ Baixar PPT",
                             data=st.session_state.ppt_bytes,
@@ -1753,7 +1836,17 @@ def main_app():
                         btn_generate = st.button("🧩 Gerar PPT", key="btn_generate", use_container_width=True)
 
                 with col3:
-                    if st.session_state.get("images_zip_bytes"):
+                    if st.session_state.get("images_zip_path") and os.path.exists(st.session_state.images_zip_path):
+                        with open(st.session_state.images_zip_path, "rb") as f:
+                            st.download_button(
+                                f"⬇️ Baixar Imagens ZIP ({_file_size_mb(st.session_state.images_zip_path):.1f} MB)",
+                                data=f,
+                                file_name=f"{(st.session_state.output_filename or 'Imagens')}.zip",
+                                mime="application/zip",
+                                use_container_width=True,
+                                key=f"images_zip_{st.session_state.get('images_zip_key', 0)}"
+                            )
+                    elif st.session_state.get("images_zip_bytes"):
                         st.download_button(
                             "⬇️ Baixar Imagens (ZIP)",
                             data=st.session_state.images_zip_bytes,
@@ -1766,7 +1859,7 @@ def main_app():
                         btn_zip = st.button("🖼️ Baixar Imagens", key="btn_zip", use_container_width=True)
 
                 # Geração do PPT (apenas para fluxo de visualização)
-                if (not st.session_state.get("ppt_bytes")) and ('btn_generate' in locals()) and btn_generate and not st.session_state.quick_generate:
+                if (not st.session_state.get("ppt_bytes")) and (not st.session_state.get("ppt_path")) and ('btn_generate' in locals()) and btn_generate and not st.session_state.quick_generate:
                     try:
                         # Aviso se houver falhas
                         if st.session_state.get("failed_details") and st.session_state.get("ignore_failed", True):
@@ -1841,24 +1934,29 @@ def main_app():
 
                             out = BytesIO(); prs.save(out); out.seek(0); ppt_bytes = out
 
-                        st.session_state.ppt_bytes = ppt_bytes
+                        _safe_remove(st.session_state.get("ppt_path"))
+                        st.session_state.ppt_path = _save_bytesio_to_tmp("pptx", ppt_bytes, "ppt")
+                        st.session_state.ppt_bytes = None
                         st.session_state.generated = True
-                        st.success(f"✅ PPT gerado com sucesso! Total de slides gerados: {len(groups)} lojas processadas.")
+                        lojas_processadas = len({loja for loja, _, url in items if url in resultados and url not in st.session_state.excluded_urls})
+                        st.success(f"✅ PPT gerado com sucesso! Lojas processadas: {lojas_processadas}. Arquivo: {_file_size_mb(st.session_state.ppt_path):.1f} MB")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao gerar PPT")
                         st.error(f"Falha ao gerar PPT: {e}")
 
                 # Geração do ZIP (apenas para fluxo de visualização)
-                if (not st.session_state.get("images_zip_bytes")) and ('btn_zip' in locals()) and btn_zip and not st.session_state.quick_generate:
+                if (not st.session_state.get("images_zip_bytes")) and (not st.session_state.get("images_zip_path")) and ('btn_zip' in locals()) and btn_zip and not st.session_state.quick_generate:
                     try:
-                        zip_bytes = montar_zip_imagens(
+                        zip_path = montar_zip_imagens(
                             items=items,
                             resultados=resultados,
                             excluded_urls=st.session_state.excluded_urls
                         )
-                        st.session_state.images_zip_bytes = zip_bytes
-                        st.success(f"✅ ZIP gerado com sucesso! Total de imagens incluídas: {sum(1 for url in resultados if url not in st.session_state.excluded_urls)}")
+                        _safe_remove(st.session_state.get("images_zip_path"))
+                        st.session_state.images_zip_path = zip_path
+                        st.session_state.images_zip_bytes = None
+                        st.success(f"✅ ZIP gerado com sucesso! Total de imagens incluídas: {sum(1 for url in resultados if url not in st.session_state.excluded_urls)}. Arquivo: {_file_size_mb(zip_path):.1f} MB")
                         st.rerun()
                     except Exception as e:
                         logger.exception("Falha ao montar ZIP")
