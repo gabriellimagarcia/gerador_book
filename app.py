@@ -1,5 +1,3 @@
-código gerador de book 
-
 # === PARTE 1/10 =====================================================
 # Boot, imports, logging e estilos iniciais
 
